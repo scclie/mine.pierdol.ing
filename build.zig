@@ -26,6 +26,27 @@ pub fn build(b: *std.Build) void {
     });
     domain_module.addImport("password_deny_list", password_deny_list_module);
 
+    const config_module = b.createModule(.{
+        .root_source_file = b.path("src/config.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const users_module = b.createModule(.{
+        .root_source_file = b.path("src/db/users.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    users_module.addImport("db_pool", pool_module);
+    const auth_module = b.createModule(.{
+        .root_source_file = b.path("src/services/auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    auth_module.addImport("config", config_module);
+    auth_module.addImport("users", users_module);
+    auth_module.addImport("domain", domain_module);
+    auth_module.addImport("db_pool", pool_module);
+
     const exe = b.addExecutable(.{
         .name = "mine-api",
         .root_source_file = b.path("src/main.zig"),
@@ -35,6 +56,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("db_pool", pool_module);
     exe.root_module.addImport("domain", domain_module);
     exe.root_module.addImport("migration_files", migration_files_module);
+    exe.root_module.addImport("config", config_module);
     exe.linkLibC();
     exe.linkSystemLibrary("pq");
     b.installArtifact(exe);
@@ -90,6 +112,27 @@ pub fn build(b: *std.Build) void {
     password_tests.linkSystemLibrary("pq");
     const run_password_tests = b.addRunArtifact(password_tests);
 
+    const auth_tests = b.addTest(.{
+        .root_source_file = b.path("test/auth_service_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    auth_tests.root_module.addImport("config", config_module);
+    auth_tests.root_module.addImport("auth", auth_module);
+    auth_tests.root_module.addImport("db_pool", pool_module);
+    auth_tests.root_module.addImport("migrations", migrations_module);
+    const postgres_module = b.createModule(.{
+        .root_source_file = b.path("test/support/postgres.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    postgres_module.addImport("db_pool", pool_module);
+    auth_tests.root_module.addImport("postgres", postgres_module);
+    auth_tests.linkLibC();
+    auth_tests.linkSystemLibrary("pq");
+    const run_auth_tests = b.addRunArtifact(auth_tests);
+
     const pool_tests = b.addTest(.{
         .root_source_file = b.path("src/db/pool.zig"),
         .target = target,
@@ -105,6 +148,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_domain_tests.step);
     test_step.dependOn(&run_migration_tests.step);
     test_step.dependOn(&run_password_tests.step);
+    test_step.dependOn(&run_auth_tests.step);
     test_step.dependOn(&run_pool_tests.step);
 }
 

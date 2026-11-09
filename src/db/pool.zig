@@ -119,6 +119,10 @@ pub const Result = struct {
         c.PQclear(self.result);
     }
 
+    pub fn rowCount(self: *const Result) usize {
+        return @intCast(c.PQntuples(self.result));
+    }
+
     pub fn value(self: *const Result, row: usize, column: usize) []const u8 {
         const length: usize = @intCast(c.PQgetlength(self.result, @intCast(row), @intCast(column)));
         return c.PQgetvalue(self.result, @intCast(row), @intCast(column))[0..length];
