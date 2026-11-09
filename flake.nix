@@ -24,9 +24,9 @@
         pname = "mine-api";
         version = "0.1.0";
         src = ./.;
-        nativeBuildInputs = [ zig ];
+        nativeBuildInputs = [ zig pkgs.postgresql pkgs.postgresql.lib ];
         buildPhase = ''
-          zig build --cache-dir "$TMPDIR/zig-cache" --global-cache-dir "$TMPDIR/zig-global-cache" --prefix "$out" -Doptimize=ReleaseSafe
+          zig build --search-prefix ${pkgs.postgresql.lib} --search-prefix ${pkgs.postgresql} --search-prefix ${pkgs.postgresql.dev} --cache-dir "$TMPDIR/zig-cache" --global-cache-dir "$TMPDIR/zig-global-cache" --prefix "$out" -Doptimize=ReleaseSafe
         '';
         installPhase = ":";
       };
