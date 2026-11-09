@@ -3,6 +3,40 @@ const c = @cImport({
     @cInclude("libpq-fe.h");
 });
 
+test "pool parameter copy cleans up only initialized entries after allocation failure" {
+    const Context = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const values = try copyParameterValues(allocator, &.{ "first", "second" });
+            defer freeParameterValues(allocator, values);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Context.run, .{});
+}
+
+fn copyParameterValues(allocator: std.mem.Allocator, parameters: []const ?[]const u8) ![]?[*:0]const u8 {
+    const parameter_values = try allocator.alloc(?[*:0]const u8, parameters.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (parameter_values[0..initialized]) |parameter_value| {
+            if (parameter_value) |value| allocator.free(std.mem.span(value));
+        }
+        allocator.free(parameter_values);
+    }
+
+    for (parameters, 0..) |parameter, index| {
+        parameter_values[index] = if (parameter) |value| (try allocator.dupeZ(u8, value)).ptr else null;
+        initialized += 1;
+    }
+    return parameter_values;
+}
+
+fn freeParameterValues(allocator: std.mem.Allocator, parameter_values: []?[*:0]const u8) void {
+    for (parameter_values) |parameter_value| {
+        if (parameter_value) |value| allocator.free(std.mem.span(value));
+    }
+    allocator.free(parameter_values);
+}
+
 pub const Pool = struct {
     allocator: std.mem.Allocator,
     connection: *c.PGconn,
@@ -35,17 +69,8 @@ pub const Pool = struct {
         const sql_z = try self.allocator.dupeZ(u8, sql);
         defer self.allocator.free(sql_z);
 
-        const parameter_values = try self.allocator.alloc(?[*:0]const u8, parameters.len);
-        defer {
-            for (parameter_values, parameters) |parameter_value, parameter| {
-                if (parameter != null) self.allocator.free(std.mem.span(parameter_value.?));
-            }
-            self.allocator.free(parameter_values);
-        }
-
-        for (parameters, 0..) |parameter, index| {
-            parameter_values[index] = if (parameter) |value| (try self.allocator.dupeZ(u8, value)).ptr else null;
-        }
+        const parameter_values = try copyParameterValues(self.allocator, parameters);
+        defer freeParameterValues(self.allocator, parameter_values);
 
         const result = (if (parameters.len == 0)
             c.PQexec(self.connection, sql_z.ptr)

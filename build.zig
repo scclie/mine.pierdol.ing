@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const migration_files_module = addMigrationFilesModule(b);
+    const password_deny_list_module = addPasswordDenyListModule(b);
     const migrations_module = b.createModule(.{
         .root_source_file = b.path("src/db/migrations.zig"),
         .target = target,
@@ -18,6 +19,13 @@ pub fn build(b: *std.Build) void {
     migrations_module.addImport("db_pool", pool_module);
     migrations_module.addImport("migration_files", migration_files_module);
 
+    const domain_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    domain_module.addImport("password_deny_list", password_deny_list_module);
+
     const exe = b.addExecutable(.{
         .name = "mine-api",
         .root_source_file = b.path("src/main.zig"),
@@ -25,6 +33,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe.root_module.addImport("db_pool", pool_module);
+    exe.root_module.addImport("domain", domain_module);
     exe.root_module.addImport("migration_files", migration_files_module);
     exe.linkLibC();
     exe.linkSystemLibrary("pq");
@@ -37,6 +46,23 @@ pub fn build(b: *std.Build) void {
         .filters = b.args orelse &.{},
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
+    unit_tests.root_module.addImport("password_deny_list", password_deny_list_module);
+
+    const applications_module = b.createModule(.{
+        .root_source_file = b.path("src/db/applications.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    applications_module.addImport("db_pool", pool_module);
+    applications_module.addImport("domain", domain_module);
+    const domain_tests = b.addTest(.{
+        .root_source_file = b.path("test/domain_application_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    domain_tests.root_module.addImport("domain", domain_module);
+    const run_domain_tests = b.addRunArtifact(domain_tests);
 
     const migration_tests = b.addTest(.{
         .root_source_file = b.path("test/migrations_test.zig"),
@@ -50,9 +76,36 @@ pub fn build(b: *std.Build) void {
     migration_tests.linkSystemLibrary("pq");
     const run_migration_tests = b.addRunArtifact(migration_tests);
 
+    const password_tests = b.addTest(.{
+        .root_source_file = b.path("test/password_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    password_tests.root_module.addImport("db_pool", pool_module);
+    password_tests.root_module.addImport("migrations", migrations_module);
+    password_tests.root_module.addImport("domain", domain_module);
+    password_tests.root_module.addImport("applications", applications_module);
+    password_tests.linkLibC();
+    password_tests.linkSystemLibrary("pq");
+    const run_password_tests = b.addRunArtifact(password_tests);
+
+    const pool_tests = b.addTest(.{
+        .root_source_file = b.path("src/db/pool.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    pool_tests.linkLibC();
+    pool_tests.linkSystemLibrary("pq");
+    const run_pool_tests = b.addRunArtifact(pool_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_domain_tests.step);
     test_step.dependOn(&run_migration_tests.step);
+    test_step.dependOn(&run_password_tests.step);
+    test_step.dependOn(&run_pool_tests.step);
 }
 
 fn addMigrationFilesModule(b: *std.Build) *std.Build.Module {
@@ -82,6 +135,14 @@ fn addMigrationFilesModule(b: *std.Build) *std.Build.Module {
 
     return b.createModule(.{
         .root_source_file = write_files.add("migration_files.zig", source.items),
+    });
+}
+
+fn addPasswordDenyListModule(b: *std.Build) *std.Build.Module {
+    const write_files = b.addWriteFiles();
+    _ = write_files.addCopyFile(b.path("assets/password-deny-list.txt"), "password-deny-list.txt");
+    return b.createModule(.{
+        .root_source_file = write_files.add("password_deny_list.zig", "pub const contents = @embedFile(\"password-deny-list.txt\");\n"),
     });
 }
 
