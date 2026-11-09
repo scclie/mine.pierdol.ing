@@ -1,0 +1,10 @@
+.zig-cache/
+zig-out/
+node_modules/
+.npm-cache/
+public/
+.env
+.env.*
+!.env.example
+playwright-report/
+test-results/

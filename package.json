@@ -1,0 +1,8 @@
+{
+  "name": "mine-platform",
+  "private": true,
+  "scripts": {
+    "dev": "node -e \"console.log('No frontend development server is configured yet.')\"",
+    "test:e2e": "node -e \"console.log('No end-to-end tests are configured yet.')\""
+  }
+}
