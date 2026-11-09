@@ -47,6 +47,28 @@ pub fn build(b: *std.Build) void {
     auth_module.addImport("domain", domain_module);
     auth_module.addImport("db_pool", pool_module);
 
+    const http_server_module = b.createModule(.{
+        .root_source_file = b.path("src/http/server.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const discord_module = b.createModule(.{
+        .root_source_file = b.path("src/services/discord.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    discord_module.addImport("config", config_module);
+    discord_module.addImport("db_pool", pool_module);
+    const auth_routes_module = b.createModule(.{
+        .root_source_file = b.path("src/routes/auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    auth_routes_module.addImport("config", config_module);
+    auth_routes_module.addImport("auth", auth_module);
+    auth_routes_module.addImport("discord", discord_module);
+    auth_routes_module.addImport("http_server", http_server_module);
+
     const exe = b.addExecutable(.{
         .name = "mine-api",
         .root_source_file = b.path("src/main.zig"),
@@ -57,6 +79,9 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("domain", domain_module);
     exe.root_module.addImport("migration_files", migration_files_module);
     exe.root_module.addImport("config", config_module);
+    exe.root_module.addImport("http_server", http_server_module);
+    exe.root_module.addImport("discord", discord_module);
+    exe.root_module.addImport("auth_routes", auth_routes_module);
     exe.linkLibC();
     exe.linkSystemLibrary("pq");
     b.installArtifact(exe);
@@ -133,6 +158,23 @@ pub fn build(b: *std.Build) void {
     auth_tests.linkSystemLibrary("pq");
     const run_auth_tests = b.addRunArtifact(auth_tests);
 
+    const oauth_route_tests = b.addTest(.{
+        .root_source_file = b.path("test/oauth_route_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    oauth_route_tests.root_module.addImport("config", config_module);
+    oauth_route_tests.root_module.addImport("db_pool", pool_module);
+    oauth_route_tests.root_module.addImport("migrations", migrations_module);
+    oauth_route_tests.root_module.addImport("postgres", postgres_module);
+    oauth_route_tests.root_module.addImport("http_server", http_server_module);
+    oauth_route_tests.root_module.addImport("discord", discord_module);
+    oauth_route_tests.root_module.addImport("auth_routes", auth_routes_module);
+    oauth_route_tests.linkLibC();
+    oauth_route_tests.linkSystemLibrary("pq");
+    const run_oauth_route_tests = b.addRunArtifact(oauth_route_tests);
+
     const pool_tests = b.addTest(.{
         .root_source_file = b.path("src/db/pool.zig"),
         .target = target,
@@ -143,12 +185,31 @@ pub fn build(b: *std.Build) void {
     pool_tests.linkSystemLibrary("pq");
     const run_pool_tests = b.addRunArtifact(pool_tests);
 
+    const wire_tests = b.addTest(.{
+        .root_source_file = b.path("src/http/server.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    const run_wire_tests = b.addRunArtifact(wire_tests);
+
+    const response_tests = b.addTest(.{
+        .root_source_file = b.path("src/http/response.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .filters = b.args orelse &.{},
+    });
+    const run_response_tests = b.addRunArtifact(response_tests);
+
     const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_response_tests.step);
+    test_step.dependOn(&run_wire_tests.step);
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_domain_tests.step);
     test_step.dependOn(&run_migration_tests.step);
     test_step.dependOn(&run_password_tests.step);
     test_step.dependOn(&run_auth_tests.step);
+    test_step.dependOn(&run_oauth_route_tests.step);
     test_step.dependOn(&run_pool_tests.step);
 }
 
