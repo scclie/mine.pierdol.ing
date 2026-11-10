@@ -59,6 +59,32 @@ pub fn build(b: *std.Build) void {
     });
     discord_module.addImport("config", config_module);
     discord_module.addImport("db_pool", pool_module);
+    const applications_module = b.createModule(.{
+        .root_source_file = b.path("src/db/applications.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    applications_module.addImport("db_pool", pool_module);
+    applications_module.addImport("domain", domain_module);
+    const application_service_module = b.createModule(.{
+        .root_source_file = b.path("src/services/applications.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    application_service_module.addImport("db_pool", pool_module);
+    application_service_module.addImport("domain", domain_module);
+    application_service_module.addImport("auth", auth_module);
+    application_service_module.addImport("applications_repository", applications_module);
+    const account_routes_module = b.createModule(.{
+        .root_source_file = b.path("src/routes/account.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    account_routes_module.addImport("config", config_module);
+    account_routes_module.addImport("auth", auth_module);
+    account_routes_module.addImport("db_pool", pool_module);
+    account_routes_module.addImport("application_service", application_service_module);
+    account_routes_module.addImport("http_server", http_server_module);
     const auth_routes_module = b.createModule(.{
         .root_source_file = b.path("src/routes/auth.zig"),
         .target = target,
@@ -68,6 +94,7 @@ pub fn build(b: *std.Build) void {
     auth_routes_module.addImport("auth", auth_module);
     auth_routes_module.addImport("discord", discord_module);
     auth_routes_module.addImport("http_server", http_server_module);
+    auth_routes_module.addImport("account_routes", account_routes_module);
 
     const exe = b.addExecutable(.{
         .name = "mine-api",
@@ -95,13 +122,6 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     unit_tests.root_module.addImport("password_deny_list", password_deny_list_module);
 
-    const applications_module = b.createModule(.{
-        .root_source_file = b.path("src/db/applications.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    applications_module.addImport("db_pool", pool_module);
-    applications_module.addImport("domain", domain_module);
     const domain_tests = b.addTest(.{
         .root_source_file = b.path("test/domain_application_test.zig"),
         .target = target,
@@ -175,6 +195,24 @@ pub fn build(b: *std.Build) void {
     oauth_route_tests.linkSystemLibrary("pq");
     const run_oauth_route_tests = b.addRunArtifact(oauth_route_tests);
 
+    const account_route_tests = b.addTest(.{
+        .root_source_file = b.path("test/account_routes_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    account_route_tests.root_module.addImport("config", config_module);
+    account_route_tests.root_module.addImport("auth", auth_module);
+    account_route_tests.root_module.addImport("domain", domain_module);
+    account_route_tests.root_module.addImport("migrations", migrations_module);
+    account_route_tests.root_module.addImport("postgres", postgres_module);
+    account_route_tests.root_module.addImport("http_server", http_server_module);
+    account_route_tests.root_module.addImport("discord", discord_module);
+    account_route_tests.root_module.addImport("auth_routes", auth_routes_module);
+    account_route_tests.linkLibC();
+    account_route_tests.linkSystemLibrary("pq");
+    const run_account_route_tests = b.addRunArtifact(account_route_tests);
+
     const pool_tests = b.addTest(.{
         .root_source_file = b.path("src/db/pool.zig"),
         .target = target,
@@ -210,6 +248,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_password_tests.step);
     test_step.dependOn(&run_auth_tests.step);
     test_step.dependOn(&run_oauth_route_tests.step);
+    test_step.dependOn(&run_account_route_tests.step);
     test_step.dependOn(&run_pool_tests.step);
 }
 

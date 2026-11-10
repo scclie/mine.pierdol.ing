@@ -8,6 +8,9 @@ pub const Request = struct {
     target: []const u8,
     content_type: ?[]const u8 = null,
     content_length: ?u64 = null,
+    body: []const u8 = "",
+    cookie: ?[]const u8 = null,
+    csrf_token: ?[]const u8 = null,
 };
 
 pub const Handler = *const fn (context: *anyopaque, request: Request, request_id: []const u8) anyerror!response.Response;
@@ -54,7 +57,8 @@ pub const Server = struct {
             route_exists = true;
             if (registered_route.method != request.method) continue;
             if (registered_route.expects_json) {
-                request_safety.validateJsonBody(request.content_type, request.content_length) catch |err| {
+                const actual_length: ?u64 = if (request.content_length) |length| @max(length, request.body.len) else null;
+                request_safety.validateJsonBody(request.content_type, actual_length) catch |err| {
                     const status: u16 = switch (err) {
                         error.UnsupportedMediaType => 415,
                         error.BodyTooLarge => 413,
@@ -111,6 +115,7 @@ pub const Server = struct {
     fn serveConnection(self: *Server, connection: std.net.Server.Connection) !void {
         defer connection.stream.close();
         var read_buffer: [16 * 1024]u8 = undefined;
+        defer std.crypto.utils.secureZero(u8, &read_buffer);
         var wire_server = std.http.Server.init(connection, &read_buffer);
         while (true) {
             var wire_request = wire_server.receiveHead() catch |err| switch (err) {
@@ -118,14 +123,28 @@ pub const Server = struct {
                 else => return,
             };
             var content_type: ?[]const u8 = null;
+            var cookie: ?[]const u8 = null;
+            var csrf_token: ?[]const u8 = null;
             var headers = wire_request.iterateHeaders();
             while (headers.next()) |header| {
                 if (std.ascii.eqlIgnoreCase(header.name, "content-type")) content_type = header.value;
+                if (std.ascii.eqlIgnoreCase(header.name, "cookie")) cookie = header.value;
+                if (std.ascii.eqlIgnoreCase(header.name, "x-csrf-token")) csrf_token = header.value;
             }
             const target = try self.allocator.dupe(u8, wire_request.head.target);
             defer self.allocator.free(target);
             const saved_content_type = if (content_type) |value| try self.allocator.dupe(u8, value) else null;
             defer if (saved_content_type) |value| self.allocator.free(value);
+            const saved_cookie = if (cookie) |value| try self.allocator.dupe(u8, value) else null;
+            defer if (saved_cookie) |value| {
+                std.crypto.utils.secureZero(u8, value);
+                self.allocator.free(value);
+            };
+            const saved_csrf = if (csrf_token) |value| try self.allocator.dupe(u8, value) else null;
+            defer if (saved_csrf) |value| {
+                std.crypto.utils.secureZero(u8, value);
+                self.allocator.free(value);
+            };
             const path = target[0 .. std.mem.indexOfScalar(u8, target, '?') orelse target.len];
             var expects_json = false;
             for (self.routes.items) |registered_route| {
@@ -136,13 +155,14 @@ pub const Server = struct {
             }
             var content_length = wire_request.head.content_length;
             var close_connection = false;
+            var body: [request_safety.json_body_limit + 1]u8 = undefined;
+            defer std.crypto.utils.secureZero(u8, &body);
+            var count: usize = 0;
             if (expects_json) {
                 if (!request_safety.isJsonContentType(saved_content_type) or (content_length orelse 0) > request_safety.json_body_limit) {
                     close_connection = true;
                 } else {
                     const reader = try wire_request.reader();
-                    var body: [request_safety.json_body_limit + 1]u8 = undefined;
-                    var count: usize = 0;
                     while (count < body.len) {
                         const n = try reader.read(body[count..]);
                         if (n == 0) break;
@@ -157,6 +177,9 @@ pub const Server = struct {
                 .target = target,
                 .content_type = saved_content_type,
                 .content_length = content_length,
+                .body = body[0..count],
+                .cookie = saved_cookie,
+                .csrf_token = saved_csrf,
             });
             defer result.deinit();
             var wire_headers: [32]std.http.Header = undefined;
