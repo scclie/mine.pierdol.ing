@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title :text="$page.title"></title>
+  <meta name="description" content="$page.description">
+  <link rel="stylesheet" href="$site.asset('css/theme.css').link()">
+  <link rel="stylesheet" href="$site.asset('css/layout.css').link()">
+</head>
+<body>
+  <a class="skip-link" href="#content">skip to content</a>
+  <div class="shell">
+    <header class="site-header">
+      <nav class="primary-nav" aria-label="Main navigation">
+        <a href="/" aria-current="$page.custom.get('section').eql('home').then('page', 'false')">home</a>
+        <a href="/rules" aria-current="$page.custom.get('section').eql('rules').then('page', 'false')">rules</a>
+      </nav>
+      <a class="login-entry" href="/login">[ login ]</a>
+    </header>
+    <main id="content" tabindex="-1">
+      <super>
+    </main>
+    <footer class="site-footer">
+      <span :text="$page.custom.get('section').eql('home').then('index.smd', $page.custom.get('section').suffix('.smd'))"></span>
+      <div class="footer-meta">
+        <a class="zine-credit" href="https://git.sccl.cc/scclie/mine.pierdol.ing" target="_blank" rel="noreferrer">source</a>
+        <span class="zine-credit footer-commit">BUILD_COMMIT</span>
+        <a class="zine-credit" href="https://zine-ssg.io" target="_blank" rel="noreferrer">built with zig zine</a>
+      </div>
+      <a class="symbol" href="https://sccl.cc" target="_blank" rel="noreferrer">sccl.cc</a>
+    </footer>
+  </div>
+</body>
+</html>

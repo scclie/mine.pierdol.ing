@@ -1,0 +1,5 @@
+<extend template="base.shtml">
+<main id="content">
+  <h1 :text="$page.title"></h1>
+  <article class="rules-document" :html="$page.content()"></article>
+</main>

@@ -1,0 +1,23 @@
+<extend template="base.shtml">
+<main id="content">
+  <h1>mine.pierdol.ing</h1>
+  <div class="intro" :html="$page.content()"></div>
+  <section aria-labelledby="servers-heading">
+    <h2 id="servers-heading">servers</h2>
+    <ul class="server-list" aria-label="Servers" :loop="$page.custom.get('servers')">
+      <li class="server-card" data-server-id="$loop.it.get('id')">
+        <h3 :text="$loop.it.get('name')"></h3>
+        <p :text="$loop.it.get('description')"></p>
+        <dl>
+          <div><dt>ver</dt><dd :text="$loop.it.get('version')"></dd></div>
+          <div><dt>addr</dt><dd>not announced</dd></div>
+          <div class="server-state" aria-live="polite" aria-atomic="true">
+            <dt>stats</dt>
+            <dd><span class="server-status" data-server-status>planned</span><br><span data-server-online>off / not launched</span></dd>
+          </div>
+        </dl>
+      </li>
+    </ul>
+  </section>
+  <script type="module" src="$site.asset('js/api.js').link()"></script>
+</main>

@@ -1,0 +1,10 @@
+<extend template="base.shtml">
+<main id="content">
+  <section class="login-page" aria-labelledby="login-title">
+    <h1 id="login-title">login</h1>
+    <p>choose sing-in method</p>
+    <div class="login-methods" data-login-methods>
+      <a class="login-method" href="/api/v1/auth/discord">[ continue with discord ]</a>
+    </div>
+  </section>
+</main>

@@ -2,7 +2,11 @@
   "name": "mine-platform",
   "private": true,
   "scripts": {
+    "build": "node scripts/build.mjs",
     "dev": "node -e \"console.log('No frontend development server is configured yet.')\"",
-    "test:e2e": "node -e \"console.log('No end-to-end tests are configured yet.')\""
+    "test:e2e": "npm run build && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0"
   }
 }

@@ -1,0 +1,14 @@
+.zine_version = "0.13.0",
+.supermd = .{ .headings_h2 = true },
+.site = .simple(.{
+    .title = "mine.pierdol.ing",
+    .host_url = "https://mine.pierdol.ing",
+    .content_dir_path = "content",
+    .layouts_dir_path = "layouts",
+    .assets_dir_path = "assets",
+    .static_assets = [
+        "css/theme.css",
+        "css/layout.css",
+        "js/api.js",
+    ],
+}),
