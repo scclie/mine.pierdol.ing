@@ -1,0 +1,53 @@
+<extend template="base.shtml">
+<main id="content">
+  <section class="workflow" aria-labelledby="account-title">
+    <h1 id="account-title">account</h1>
+    <p>manage your application and minecraft access.</p>
+    <noscript><p>javascript is required for secure account controls. you can still visit <a href="/login">login</a> or read the rules.</p></noscript>
+    <p role="alert" data-error></p>
+    <p role="status" data-notice></p>
+    <div data-account hidden>
+      <p>signed in as <span data-display-name></span></p>
+      <dl>
+        <div><dt>state</dt><dd data-account-state></dd></div>
+        <div data-nickname-row hidden><dt>nickname</dt><dd data-nickname></dd></div>
+        <div data-reason-row hidden><dt>decision reason</dt><dd class="literal-text" data-decision-reason></dd></div>
+      </dl>
+      <p data-password-setup hidden>password setup required</p>
+      <div data-controls></div>
+      <div class="workflow-actions">
+        <a href="/admin/applications" data-moderation hidden>moderation queue</a>
+        <button type="button" data-logout>sign out</button>
+      </div>
+    </div>
+    <template data-application-form>
+      <form aria-label="application">
+        <h2>application</h2>
+        <label for="minecraft-nickname">minecraft nickname</label>
+        <input id="minecraft-nickname" name="minecraft_nickname" required minlength="3" maxlength="16" pattern="[A-Za-z0-9_]{3,16}" autocomplete="off">
+        <label for="client-type">client type</label>
+        <select id="client-type" name="client_type"><option value="licensed">licensed</option><option value="cracked">cracked</option></select>
+        <label for="about-me">about me</label>
+        <textarea id="about-me" name="about_me" required maxlength="2000" rows="4"></textarea>
+        <label for="discovery-source">discovery source</label>
+        <textarea id="discovery-source" name="discovery_source" required maxlength="300" rows="2"></textarea>
+        <div data-password-field hidden>
+          <label for="application-password">password</label>
+          <input id="application-password" name="password" type="password" autocomplete="new-password" minlength="12" aria-describedby="application-password-help" disabled>
+          <p class="field-help" id="application-password-help">at least 12 characters; use a unique password.</p>
+        </div>
+        <button type="submit">submit application</button>
+      </form>
+    </template>
+    <template data-password-form>
+      <form aria-label="change password">
+        <h2>minecraft password</h2>
+        <label for="account-password">password</label>
+        <input id="account-password" name="password" type="password" autocomplete="new-password" minlength="12" required aria-describedby="account-password-help">
+        <p class="field-help" id="account-password-help">at least 12 characters; use a unique password.</p>
+        <button type="submit">save password</button>
+      </form>
+    </template>
+  </section>
+  <script type="module" src="$site.asset('js/account.js').link()"></script>
+</main>

@@ -85,6 +85,17 @@ pub const AuthService = struct {
         try self.users.revokeSessions(user_id);
     }
 
+    pub fn logout(self: *AuthService, request: Request) !void {
+        const actor = try self.authenticate(request);
+        try self.requireCsrf(request, actor);
+        var token_hash = hashParameter(request.session_token);
+        defer @memset(token_hash[0..], 0);
+        var csrf_token_hash = hashParameter(request.csrf_token.?);
+        defer @memset(csrf_token_hash[0..], 0);
+        // atomically verify both hashes and active status before revocation
+        try self.users.revokeSession(&token_hash, &csrf_token_hash);
+    }
+
     pub fn requireCsrf(_: *AuthService, request: Request, actor: AuthenticatedActor) !void {
         const csrf_token = request.csrf_token orelse return error.CsrfTokenRequired;
         var csrf_token_hash = hashToken(csrf_token);

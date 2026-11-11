@@ -170,6 +170,116 @@ fn expectError(result: *const http.response.Response, status: u16, code: []const
     try std.testing.expect(result.header("X-Request-ID") != null);
 }
 
+test "logout_route_test revokes only current session and expires the actual cookie in both security modes" {
+    for ([_]bool{ true, false }) |development| {
+        var f: Fixture = undefined;
+        try f.init();
+        defer f.deinit();
+        f.loaded.development_mode = development;
+        var service = auth.AuthService.init(std.testing.allocator, &f.database.pool, &f.loaded);
+        var other = try service.createSession(1);
+        defer other.deinit(std.testing.allocator);
+        try f.sql("INSERT INTO users (discord_id, discord_username) VALUES ('999999999999999999', 'Other user')");
+        var unrelated = try service.createSession(2);
+        defer unrelated.deinit(std.testing.allocator);
+        var token = try f.csrf();
+        defer @memset(&token, 0);
+        // never let untrusted selectors determine which session or user to revoke.
+        const body = try std.fmt.allocPrint(std.testing.allocator, "{{\"user_id\":2,\"session_token\":\"{s}\"}}", .{other.session_token});
+        defer {
+            @memset(body, 0);
+            std.testing.allocator.free(body);
+        }
+        var result = try f.mutate(.POST, "/api/v1/auth/logout?user_id=2", body, &token);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(u16, 204), result.status);
+        try std.testing.expectEqualStrings("", result.body);
+        try std.testing.expectEqualStrings(if (development)
+            "mine_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+        else
+            "mine_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure", result.header("Set-Cookie").?);
+        for (result.headers.items) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, "Set-Cookie")) try std.testing.expect(header.sensitive);
+            try std.testing.expect(std.mem.indexOf(u8, header.value, &f.issued.session_token) == null);
+            try std.testing.expect(std.mem.indexOf(u8, header.value, &token) == null);
+        }
+        var replay = try f.get();
+        defer replay.deinit();
+        try expectError(&replay, 401, "authentication_required");
+        var repeated = try f.mutate(.POST, "/api/v1/auth/logout", "{}", &token);
+        defer repeated.deinit();
+        try expectError(&repeated, 401, "authentication_required");
+        _ = try service.authenticate(.{ .session_token = &other.session_token, .csrf_token = null });
+        _ = try service.authenticate(.{ .session_token = &unrelated.session_token, .csrf_token = null });
+        try f.expectSql("SELECT count(*) FROM web_sessions WHERE revoked_at IS NOT NULL", "1");
+        try f.expectSql("SELECT count(*) FROM web_sessions WHERE revoked_at IS NULL", "2");
+    }
+}
+
+test "logout_route_test requires a valid unambiguous authenticated session" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const duplicate = try std.fmt.allocPrint(std.testing.allocator, "{s}; mine_session={s}", .{ f.cookie, f.issued.session_token });
+    defer {
+        @memset(duplicate, 0);
+        std.testing.allocator.free(duplicate);
+    }
+    for ([_]?[]const u8{ null, "mine_session=forged", "mine_session=" ++ "0" ** 64, duplicate }) |cookie| {
+        var result = try f.server.dispatch(.{ .method = .POST, .target = "/api/v1/auth/logout", .cookie = cookie, .csrf_token = &f.issued.csrf_token, .body = "{}", .content_type = "application/json", .content_length = 2 });
+        defer result.deinit();
+        try expectError(&result, 401, "authentication_required");
+        try std.testing.expect(result.header("Set-Cookie") == null);
+    }
+    try f.expectSql("SELECT count(*) FROM web_sessions WHERE revoked_at IS NOT NULL", "0");
+}
+
+test "logout_route_test missing invalid and other-session CSRF cannot revoke sessions" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var service = auth.AuthService.init(std.testing.allocator, &f.database.pool, &f.loaded);
+    var other = try service.createSession(1);
+    defer other.deinit(std.testing.allocator);
+    for ([_]?[]const u8{ null, "wrong-token", &other.csrf_token }, [_][]const u8{ "csrf_token_required", "csrf_token_invalid", "csrf_token_invalid" }) |token, code| {
+        var result = try f.mutate(.POST, "/api/v1/auth/logout", "{}", token);
+        defer result.deinit();
+        try expectError(&result, 403, code);
+        try std.testing.expect(result.header("Set-Cookie") == null);
+        try noSecrets(result.body);
+    }
+    try f.expectSql("SELECT count(*) FROM web_sessions WHERE revoked_at IS NOT NULL", "0");
+    _ = try service.authenticate(.{ .session_token = &f.issued.session_token, .csrf_token = null });
+    _ = try service.authenticate(.{ .session_token = &other.session_token, .csrf_token = null });
+}
+
+test "logout_route_test expired sessions cannot logout and GET cannot mutate" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var get = try f.server.dispatch(.{ .method = .GET, .target = "/api/v1/auth/logout", .cookie = f.cookie, .csrf_token = &f.issued.csrf_token });
+    defer get.deinit();
+    try expectError(&get, 405, "method_not_allowed");
+    try f.sql("UPDATE web_sessions SET expires_at = now() - INTERVAL '1 second'");
+    var expired = try f.mutate(.POST, "/api/v1/auth/logout", "{}", &f.issued.csrf_token);
+    defer expired.deinit();
+    try expectError(&expired, 401, "authentication_required");
+    try f.expectSql("SELECT count(*) FROM web_sessions WHERE revoked_at IS NOT NULL", "0");
+}
+
+test "logout_route_test enforces JSON media type and bounds before revocation" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    var media = try f.server.dispatch(.{ .method = .POST, .target = "/api/v1/auth/logout", .cookie = f.cookie, .csrf_token = &f.issued.csrf_token, .content_type = "text/plain", .content_length = 2 });
+    defer media.deinit();
+    try expectError(&media, 415, "unsupported_media_type");
+    var oversized = try f.server.dispatch(.{ .method = .POST, .target = "/api/v1/auth/logout", .cookie = f.cookie, .csrf_token = &f.issued.csrf_token, .content_type = "application/json", .content_length = 65537 });
+    defer oversized.deinit();
+    try expectError(&oversized, 413, "request_body_too_large");
+    try f.expectSql("SELECT count(*) FROM web_sessions WHERE revoked_at IS NOT NULL", "0");
+}
+
 test "account_routes_test unauthenticated application creation requires server-side authentication" {
     var database = try postgres.TestDatabase.create(std.testing.allocator, std.posix.getenv("TEST_DATABASE_URL") orelse return error.MissingTestDatabaseUrl);
     defer database.deinit();

@@ -18,6 +18,7 @@ export default defineConfig({
   ],
   webServer: {
     command: 'node tests/support/static-server.mjs',
+    env: { TASK10_OAUTH_STUB: '1' },
     url: 'http://127.0.0.1:3099/__ready',
     reuseExistingServer: false,
   },

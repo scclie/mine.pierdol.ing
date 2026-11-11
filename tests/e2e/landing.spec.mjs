@@ -233,7 +233,7 @@ test('login entry opens the static Discord-only page', async ({ page }, testInfo
   await expect(page.locator('input, button, form')).toHaveCount(0);
   await expect(discord).toHaveCSS('border-radius', '0px');
   await page.screenshot({ path: `/tmp/opencode/login-entry/screenshots/login-${testInfo.project.name}.png`, fullPage: true });
-  for (const name of ['Skip to content', 'home', 'rules', '[ login ]']) {
+  for (const name of ['skip to content', 'home', 'rules', '[ login ]']) {
     await page.keyboard.press('Tab');
     await expect(page.getByRole('link', { name, exact: true })).toBeFocused();
   }
@@ -276,7 +276,7 @@ test('partial valid data keeps undeclared counts and unmatched cards honest', as
   await page.goto('/');
   await page.waitForLoadState('networkidle');
   await expect(page.locator('[data-server-status]')).toHaveText(['planned', 'planned']);
-  // The matched card is hydrated; the unmatched card keeps its literal static copy.
+  // update the matched card
   await expect(page.locator('[data-server-online]')).toHaveText(['offline · not launched', 'off / not launched']);
   await expect(page.getByRole('list', { name: 'Servers' }).getByRole('listitem')).toHaveCount(2);
 });

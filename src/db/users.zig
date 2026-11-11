@@ -53,6 +53,15 @@ pub const UserRepository = struct {
         try revokeSessionsInTransaction(&transaction, user_id_parameter);
         try transaction.commit();
     }
+
+    pub fn revokeSession(self: *UserRepository, token_hash: []const u8, csrf_token_hash: []const u8) !void {
+        var result = try self.pool.query(
+            "UPDATE web_sessions SET revoked_at = now() WHERE token_hash = $1::bytea AND csrf_token_hash = $2::bytea AND revoked_at IS NULL AND expires_at > now() RETURNING id",
+            &.{ token_hash, csrf_token_hash },
+        );
+        defer result.deinit();
+        if (result.rowCount() != 1) return error.SessionNotFound;
+    }
 };
 
 pub fn revokeSessionsInTransaction(transaction: *db.Transaction, user_id: []const u8) !void {

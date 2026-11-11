@@ -168,6 +168,44 @@ dd {
   top: 0.5rem;
 }
 
+/* enhance account and moderation only; keep the public layout unchanged */
+.workflow { min-width: 0; }
+.workflow [hidden] { display: none !important; }
+.workflow form { margin-block: 1.5rem; max-width: 42rem; }
+.workflow label { display: block; margin-top: 1rem; color: var(--nord5); }
+.workflow input,
+.workflow select,
+.workflow textarea,
+.workflow button {
+  font: inherit;
+  color: var(--nord4);
+  background: var(--nord0);
+  border: 1px solid var(--nord9);
+  border-radius: 0;
+  padding: 0.5rem;
+  max-width: 100%;
+}
+.workflow input,
+.workflow select,
+.workflow textarea { display: block; width: 100%; min-width: 0; }
+.workflow textarea { resize: vertical; }
+.workflow button { cursor: pointer; color: var(--nord8); margin-block: 0.5rem; overflow-wrap: anywhere; }
+.workflow button:hover:not(:disabled),
+.workflow button:focus-visible { background: var(--nord8); color: black; }
+.workflow button:disabled { cursor: not-allowed; opacity: 0.55; }
+.workflow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-top: 1rem; }
+.field-help { color: var(--nord4); font-size: 0.875rem; margin-block: 0.5rem; }
+.field-error { display: block; color: var(--nord13); }
+.workflow [role="alert"] { color: var(--nord13); overflow-wrap: anywhere; }
+.workflow [role="status"] { color: var(--nord14); }
+.workflow [aria-invalid="true"] { border-color: var(--nord13); }
+.literal-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.application-queue { list-style: none; margin: 0; padding: 0; }
+.application-queue li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--nord9); padding-block: 0.5rem; }
+.application-queue span { min-width: 0; overflow-wrap: anywhere; }
+.workflow [data-card] { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--nord8); }
+.workflow [data-card] h3 { margin-top: 2rem; }
+
 @media (max-width: 767px) {
   html {
     font-size: 14px;

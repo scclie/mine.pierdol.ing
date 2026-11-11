@@ -30,8 +30,37 @@ pub const Router = struct {
 pub fn register(server: *http.Server, router: *Router) !void {
     try server.route(.GET, "/api/v1/auth/discord", router, beginLogin);
     try server.route(.GET, "/api/v1/auth/discord/callback", router, completeCallback);
+    try server.routeJson(.POST, "/api/v1/auth/logout", router, logout);
     try account.register(server, &router.account_router);
     try admin.register(server, &router.admin_router);
+}
+
+fn logout(context: *anyopaque, request: http.Request, request_id: []const u8) !response.Response {
+    const router: *Router = @ptrCast(@alignCast(context));
+    return completeLogout(router, request) catch |err| {
+        const status: u16 = switch (err) {
+            error.SessionNotFound => 401,
+            error.CsrfTokenRequired, error.CsrfTokenInvalid => 403,
+            else => 500,
+        };
+        const code = switch (err) {
+            error.SessionNotFound => "authentication_required",
+            error.CsrfTokenRequired => "csrf_token_required",
+            error.CsrfTokenInvalid => "csrf_token_invalid",
+            else => "internal_error",
+        };
+        return errors.errorResponse(router.allocator, status, code, "Logout request could not be completed.", request_id);
+    };
+}
+
+fn completeLogout(router: *Router, request: http.Request) !response.Response {
+    const authentication = auth.Request{ .session_token = try account.sessionToken(request.cookie), .csrf_token = request.csrf_token };
+    var result = try response.Response.init(router.allocator, 204, "");
+    errdefer result.deinit();
+    try addSessionCookie(router, &result, "", 0);
+    var service = auth.AuthService.init(router.allocator, router.discord_service.pool, router.configuration);
+    try service.logout(authentication);
+    return result;
 }
 
 fn beginLogin(context: *anyopaque, request: http.Request, _: []const u8) !response.Response {
@@ -78,14 +107,18 @@ fn completeCallback(context: *anyopaque, request: http.Request, request_id: []co
 
     var result = try response.redirect(router.allocator, completed.return_path);
     errdefer result.deinit();
+    try addSessionCookie(router, &result, &issued.session_token, 2592000);
+    return result;
+}
+
+fn addSessionCookie(router: *Router, result: *response.Response, token: []const u8, max_age: u32) !void {
     const secure = if (router.configuration.development_mode) "" else "; Secure";
-    const cookie = try std.fmt.allocPrint(router.allocator, "mine_session={s}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000{s}", .{ &issued.session_token, secure });
+    const cookie = try std.fmt.allocPrint(router.allocator, "mine_session={s}; Path=/; HttpOnly; SameSite=Lax; Max-Age={d}{s}", .{ token, max_age, secure });
     defer {
         std.crypto.utils.secureZero(u8, cookie);
         router.allocator.free(cookie);
     }
     try result.addSensitiveHeader("Set-Cookie", cookie);
-    return result;
 }
 
 fn oauthStateError(allocator: std.mem.Allocator, request_id: []const u8) !response.Response {

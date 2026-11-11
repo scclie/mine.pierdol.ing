@@ -22,6 +22,12 @@ try {
     await cp(join(root, `content/${page}.md`), join(stage, `content/${page}.smd`));
     await cp(join(root, `layouts/${page}.shtml`), join(stage, `layouts/${page}.shtml`));
   }
+  // pages contain no editable markdown; generate metadata in staging only
+  for (const [page, section] of [['account', 'account'], ['admin-applications', 'admin/applications']]) {
+    await mkdir(join(stage, 'content', section), { recursive: true });
+    await writeFile(join(stage, 'content', section, 'index.smd'), `---\n.title = "${page}",\n.description = "${page}",\n.date = .date("2026-11-11T00:00:00"),\n.layout = "${page}.shtml",\n.custom = .{ .section = "${page}" },\n---\n`);
+    await cp(join(root, `layouts/${page}.shtml`), join(stage, `layouts/${page}.shtml`));
+  }
   await cp(join(root, 'layouts/base.shtml'), join(stage, 'layouts/templates/base.shtml'));
   const stagedBase = join(stage, 'layouts/templates/base.shtml');
   const template = await readFile(stagedBase, 'utf8');

@@ -11,6 +11,16 @@ const server = createServer(async (request, response) => {
     response.writeHead(200).end('ready');
     return;
   }
+  // enable local oauth only in isolated tests.
+  // api responses come from test fixtures, not production.
+  if (process.env.TASK10_OAUTH_STUB === '1' && pathname === '/api/v1/auth/discord') {
+    response.writeHead(302, { Location: '/api/v1/auth/discord/callback?code=local&state=local' }).end();
+    return;
+  }
+  if (process.env.TASK10_OAUTH_STUB === '1' && pathname === '/api/v1/auth/discord/callback') {
+    response.writeHead(302, { Location: '/account', 'Set-Cookie': `mine_session=${'b'.repeat(64)}; Path=/; HttpOnly; SameSite=Lax` }).end();
+    return;
+  }
   const path = resolve(root, `.${pathname}`);
   if (path !== root && !path.startsWith(`${root}/`)) {
     response.writeHead(403).end();

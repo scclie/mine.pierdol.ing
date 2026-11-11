@@ -1,0 +1,69 @@
+<extend template="base.shtml">
+<main id="content">
+  <section class="workflow" aria-labelledby="admin-title">
+    <h1 id="admin-title">applications</h1>
+    <p><a href="/account">account</a> / moderation queue</p>
+    <noscript><p>javascript is required for secure moderation controls.</p></noscript>
+    <p role="alert" data-error></p>
+    <p role="status" data-notice></p>
+    <div data-admin hidden>
+      <form data-filter aria-label="application filters" method="get">
+        <label for="status-filter">status filter</label>
+        <select id="status-filter" name="status">
+          <option value="pending">pending</option><option value="approved">approved</option>
+          <option value="rejected_retryable">rejected_retryable</option><option value="rejected_final">rejected_final</option><option value="banned">banned</option>
+        </select>
+        <label for="queue-search">search</label>
+        <input id="queue-search" name="query" maxlength="100" aria-describedby="search-help">
+        <p id="search-help" class="field-help">nickname, exact discord id or user id. oldest applications first.</p>
+        <label for="page-size">page size</label>
+        <select id="page-size" name="limit"><option value="10">10</option><option value="25" selected>25</option><option value="100">100</option></select>
+        <button type="submit">filter</button>
+      </form>
+      <h2>queue</h2>
+      <ul class="application-queue" data-queue></ul>
+      <p data-empty hidden>no applications found</p>
+      <div class="workflow-actions"><button type="button" data-first>first page</button><button type="button" data-next disabled>next page</button></div>
+      <section data-card aria-label="application review" tabindex="-1" hidden>
+        <h2 data-card-title></h2>
+        <dl data-card-details></dl>
+        <div data-review-controls></div>
+        <div data-editor></div>
+      </section>
+    </div>
+    <template data-decision-form>
+      <form aria-label="moderation decision">
+        <h3>decision</h3>
+        <label for="rejection-reason">rejection reason</label>
+        <textarea id="rejection-reason" name="reason" rows="3" maxlength="2000" aria-describedby="reason-help"></textarea>
+        <p class="field-help" id="reason-help">a non-whitespace reason is required for either rejection.</p>
+        <div class="workflow-actions">
+          <button type="submit" value="approve">approve</button>
+          <button type="submit" value="retryable" disabled>reject — allow resubmission</button>
+          <button type="submit" value="final" disabled>reject — final</button>
+        </div>
+      </form>
+    </template>
+    <template data-edit-form>
+      <form aria-label="identity and status">
+        <h3>identity and status</h3>
+        <label for="edit-nickname">minecraft nickname</label>
+        <input id="edit-nickname" name="minecraft_nickname" required minlength="3" maxlength="16" pattern="[A-Za-z0-9_]{3,16}">
+        <label for="edit-discord">discord id</label>
+        <input id="edit-discord" name="discord_id" required inputmode="numeric" pattern="[1-9][0-9]{0,19}" maxlength="20">
+        <label for="edit-client">client type</label>
+        <select id="edit-client" name="client_type"><option value="licensed">licensed</option><option value="cracked">cracked</option></select>
+        <label for="edit-status">new status</label>
+        <select id="edit-status" name="status">
+          <option value="pending">pending</option><option value="approved">approved</option>
+          <option value="rejected_retryable">rejected_retryable</option><option value="rejected_final">rejected_final</option><option value="banned">banned</option>
+        </select>
+        <label for="edit-reason">change reason</label>
+        <textarea id="edit-reason" name="reason" rows="3" maxlength="2000" aria-describedby="edit-help"></textarea>
+        <p class="field-help" id="edit-help">required for bans and rejections. only changed fields are sent; the api validates transitions.</p>
+        <button type="submit">save changes</button>
+      </form>
+    </template>
+  </section>
+  <script type="module" src="$site.asset('js/admin.js').link()"></script>
+</main>
