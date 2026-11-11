@@ -50,14 +50,15 @@ pub const UserRepository = struct {
         const user_id_parameter = try std.fmt.bufPrint(&user_id_buffer, "{d}", .{user_id});
         var transaction = try self.pool.begin();
         errdefer transaction.rollback() catch {};
-        var result = try transaction.query(
-            "UPDATE web_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL",
-            &.{user_id_parameter},
-        );
-        result.deinit();
+        try revokeSessionsInTransaction(&transaction, user_id_parameter);
         try transaction.commit();
     }
 };
+
+pub fn revokeSessionsInTransaction(transaction: *db.Transaction, user_id: []const u8) !void {
+    var result = try transaction.query("UPDATE web_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", &.{user_id});
+    result.deinit();
+}
 
 fn decodeHex(value: []const u8, destination: *[32]u8) !void {
     if (value.len != destination.len * 2) return error.InvalidSessionHash;

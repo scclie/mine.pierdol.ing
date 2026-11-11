@@ -6,19 +6,24 @@ const http = @import("http_server");
 const response = http.response;
 const errors = http.errors;
 const account = @import("account_routes");
+const admin = @import("admin_routes");
 
 pub const Router = struct {
     allocator: std.mem.Allocator,
     discord_service: *discord.DiscordService,
     configuration: *const config.Config,
     account_router: account.Router,
+    admin_router: admin.Router,
 
     pub fn init(allocator: std.mem.Allocator, discord_service: *discord.DiscordService, configuration: *const config.Config) !Router {
-        return .{ .allocator = allocator, .discord_service = discord_service, .configuration = configuration, .account_router = try account.Router.init(allocator, discord_service.pool, configuration) };
+        var account_router = try account.Router.init(allocator, discord_service.pool, configuration);
+        errdefer account_router.deinit();
+        return .{ .allocator = allocator, .discord_service = discord_service, .configuration = configuration, .account_router = account_router, .admin_router = try admin.Router.init(allocator, discord_service.pool, configuration) };
     }
 
     pub fn deinit(self: *Router) void {
         self.account_router.deinit();
+        self.admin_router.deinit();
     }
 };
 
@@ -26,6 +31,7 @@ pub fn register(server: *http.Server, router: *Router) !void {
     try server.route(.GET, "/api/v1/auth/discord", router, beginLogin);
     try server.route(.GET, "/api/v1/auth/discord/callback", router, completeCallback);
     try account.register(server, &router.account_router);
+    try admin.register(server, &router.admin_router);
 }
 
 fn beginLogin(context: *anyopaque, request: http.Request, _: []const u8) !response.Response {
@@ -59,10 +65,16 @@ fn completeCallback(context: *anyopaque, request: http.Request, request_id: []co
     };
     defer completed.deinit(router.allocator);
 
+    // lock identity until session creation to prevent ownership races
+    var transaction = try router.discord_service.pool.begin();
+    var committed = false;
+    defer if (!committed) transaction.rollback() catch {};
     const user_id = router.discord_service.upsertIdentity(completed.identity) catch return errors.errorResponse(router.allocator, 500, "internal_error", "An internal error occurred.", request_id);
     var auth_service = auth.AuthService.init(router.allocator, router.discord_service.pool, router.configuration);
     var issued = auth_service.createSession(user_id) catch return errors.errorResponse(router.allocator, 500, "internal_error", "An internal error occurred.", request_id);
     defer issued.deinit(router.allocator);
+    try transaction.commit();
+    committed = true;
 
     var result = try response.redirect(router.allocator, completed.return_path);
     errdefer result.deinit();

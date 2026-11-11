@@ -53,7 +53,7 @@ pub const Server = struct {
         const path = request.target[0 .. std.mem.indexOfScalar(u8, request.target, '?') orelse request.target.len];
         var route_exists = false;
         for (self.routes.items) |registered_route| {
-            if (!std.mem.eql(u8, registered_route.path, path)) continue;
+            if (!matchesPath(registered_route.path, path)) continue;
             route_exists = true;
             if (registered_route.method != request.method) continue;
             if (registered_route.expects_json) {
@@ -85,7 +85,7 @@ pub const Server = struct {
             var allow = std.ArrayList(u8).init(self.allocator);
             defer allow.deinit();
             for (self.routes.items) |registered_route| {
-                if (!std.mem.eql(u8, registered_route.path, path)) continue;
+                if (!matchesPath(registered_route.path, path)) continue;
                 if (allow.items.len != 0) try allow.appendSlice(", ");
                 try allow.appendSlice(@tagName(registered_route.method));
             }
@@ -148,7 +148,7 @@ pub const Server = struct {
             const path = target[0 .. std.mem.indexOfScalar(u8, target, '?') orelse target.len];
             var expects_json = false;
             for (self.routes.items) |registered_route| {
-                if (registered_route.method == wire_request.head.method and std.mem.eql(u8, registered_route.path, path)) {
+                if (registered_route.method == wire_request.head.method and matchesPath(registered_route.path, path)) {
                     expects_json = registered_route.expects_json;
                     break;
                 }
@@ -194,6 +194,18 @@ pub const Server = struct {
         }
     }
 };
+
+fn matchesPath(pattern: []const u8, path: []const u8) bool {
+    var expected = std.mem.splitScalar(u8, pattern, '/');
+    var actual = std.mem.splitScalar(u8, path, '/');
+    while (expected.next()) |segment| {
+        const value = actual.next() orelse return false;
+        if (segment.len > 0 and segment[0] == ':') {
+            if (value.len == 0) return false;
+        } else if (!std.mem.eql(u8, segment, value)) return false;
+    }
+    return actual.next() == null;
+}
 
 fn parseListenAddress(value: []const u8) !std.net.Address {
     const separator = std.mem.lastIndexOfScalar(u8, value, ':') orelse return error.InvalidListenAddress;

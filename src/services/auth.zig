@@ -93,7 +93,7 @@ pub const AuthService = struct {
     }
 };
 
-fn roleForDiscordId(configuration: *const config.Config, discord_id: []const u8) types.Role {
+pub fn roleForDiscordId(configuration: *const config.Config, discord_id: []const u8) types.Role {
     const numeric_discord_id = std.fmt.parseInt(u64, discord_id, 10) catch return .player;
     if (configuration.administrator_discord_ids.contains(numeric_discord_id)) return .administrator;
     if (configuration.moderator_discord_ids.contains(numeric_discord_id)) return .moderator;

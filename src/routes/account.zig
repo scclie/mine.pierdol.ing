@@ -58,7 +58,7 @@ fn dispatch(router: *Router, request: http.Request) !response.Response {
     return result;
 }
 
-fn sessionToken(cookie: ?[]const u8) ![]const u8 {
+pub fn sessionToken(cookie: ?[]const u8) ![]const u8 {
     var fields = std.mem.splitScalar(u8, cookie orelse return error.SessionNotFound, ';');
     var token: ?[]const u8 = null;
     while (fields.next()) |raw| {

@@ -66,6 +66,8 @@ pub fn build(b: *std.Build) void {
     });
     applications_module.addImport("db_pool", pool_module);
     applications_module.addImport("domain", domain_module);
+    applications_module.addImport("auth", auth_module);
+    applications_module.addImport("users", users_module);
     const application_service_module = b.createModule(.{
         .root_source_file = b.path("src/services/applications.zig"),
         .target = target,
@@ -85,6 +87,18 @@ pub fn build(b: *std.Build) void {
     account_routes_module.addImport("db_pool", pool_module);
     account_routes_module.addImport("application_service", application_service_module);
     account_routes_module.addImport("http_server", http_server_module);
+    const admin_routes_module = b.createModule(.{
+        .root_source_file = b.path("src/routes/admin.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    admin_routes_module.addImport("config", config_module);
+    admin_routes_module.addImport("auth", auth_module);
+    admin_routes_module.addImport("db_pool", pool_module);
+    admin_routes_module.addImport("domain", domain_module);
+    admin_routes_module.addImport("application_service", application_service_module);
+    admin_routes_module.addImport("http_server", http_server_module);
+    admin_routes_module.addImport("account_routes", account_routes_module);
     const auth_routes_module = b.createModule(.{
         .root_source_file = b.path("src/routes/auth.zig"),
         .target = target,
@@ -95,6 +109,7 @@ pub fn build(b: *std.Build) void {
     auth_routes_module.addImport("discord", discord_module);
     auth_routes_module.addImport("http_server", http_server_module);
     auth_routes_module.addImport("account_routes", account_routes_module);
+    auth_routes_module.addImport("admin_routes", admin_routes_module);
 
     const exe = b.addExecutable(.{
         .name = "mine-api",
@@ -213,6 +228,25 @@ pub fn build(b: *std.Build) void {
     account_route_tests.linkSystemLibrary("pq");
     const run_account_route_tests = b.addRunArtifact(account_route_tests);
 
+    const admin_route_tests = b.addTest(.{
+        .root_source_file = b.path("test/admin_routes_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    admin_route_tests.root_module.addImport("config", config_module);
+    admin_route_tests.root_module.addImport("auth", auth_module);
+    admin_route_tests.root_module.addImport("domain", domain_module);
+    admin_route_tests.root_module.addImport("db_pool", pool_module);
+    admin_route_tests.root_module.addImport("migrations", migrations_module);
+    admin_route_tests.root_module.addImport("postgres", postgres_module);
+    admin_route_tests.root_module.addImport("http_server", http_server_module);
+    admin_route_tests.root_module.addImport("discord", discord_module);
+    admin_route_tests.root_module.addImport("auth_routes", auth_routes_module);
+    admin_route_tests.linkLibC();
+    admin_route_tests.linkSystemLibrary("pq");
+    const run_admin_route_tests = b.addRunArtifact(admin_route_tests);
+
     const pool_tests = b.addTest(.{
         .root_source_file = b.path("src/db/pool.zig"),
         .target = target,
@@ -249,6 +283,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_auth_tests.step);
     test_step.dependOn(&run_oauth_route_tests.step);
     test_step.dependOn(&run_account_route_tests.step);
+    test_step.dependOn(&run_admin_route_tests.step);
     test_step.dependOn(&run_pool_tests.step);
 }
 
