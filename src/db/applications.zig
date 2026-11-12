@@ -134,13 +134,14 @@ pub const ApplicationRepository = struct {
         if (!valid_session) return error.CsrfTokenInvalid;
 
         // Lock the application too to prevent concurrent submissions.
-        var current = try transaction.query("SELECT status, client_type FROM applications WHERE user_id = $1 FOR UPDATE", &.{id});
+        var current = try transaction.query("SELECT status, client_type, minecraft_nickname FROM applications WHERE user_id = $1 FOR UPDATE", &.{id});
         defer current.deinit();
         const status = if (current.rowCount() == 1) std.meta.stringToEnum(types.ApplicationStatus, current.value(0, 0)).? else null;
         const client_type = if (current.rowCount() == 1) std.meta.stringToEnum(types.ClientType, current.value(0, 1)).? else null;
         try requireAction(actor, mutation, status, client_type);
 
         if (input) |content| {
+            if (mutation == .resubmit) try domain.application.requireUnchangedNickname(current.value(0, 2), content.nickname);
             switch (content.client_type) {
                 .cracked => if (content.password_hash == null) return error.PasswordRequiredForCracked,
                 .licensed => if (content.password_hash != null) return error.PasswordNotAllowedForLicensed,
@@ -156,8 +157,8 @@ pub const ApplicationRepository = struct {
                 )
             else
                 try transaction.query(
-                    "UPDATE applications SET minecraft_nickname = $2, minecraft_nickname_normalized = $3, client_type = $4::minecraft_client_type, about_me = $5, discovery_source = $6, status = 'pending', decision_reason = NULL, decided_at = NULL, decided_by_user_id = NULL, submitted_at = now(), updated_at = now() WHERE user_id = $1",
-                    &.{ id, content.nickname.display(), content.nickname.canonical(), @tagName(content.client_type), content.about_me, content.discovery_source },
+                    "UPDATE applications SET client_type = $2::minecraft_client_type, about_me = $3, discovery_source = $4, status = 'pending', decision_reason = NULL, decided_at = NULL, decided_by_user_id = NULL, submitted_at = now(), updated_at = now() WHERE user_id = $1",
+                    &.{ id, @tagName(content.client_type), content.about_me, content.discovery_source },
                 );
             changed.deinit();
             if (content.password_hash) |hash| {

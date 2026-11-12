@@ -1,5 +1,4 @@
 import { test, expect } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
 import { accountApi } from '../support/account-api.mjs';
 
 async function openCard(page) {
@@ -23,8 +22,7 @@ test('moderator sees pending queue and decision controls but no identity editor'
   for (const name of ['reject — allow resubmission', 'reject — final']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
   await page.getByLabel('rejection reason', { exact: true }).fill('Please add more detail.');
   for (const name of ['reject — allow resubmission', 'reject — final']) await expect(page.getByRole('button', { name, exact: true })).toBeEnabled();
-  await mkdir('/tmp/opencode/task10/screenshots', { recursive: true });
-  await page.screenshot({ path: `/tmp/opencode/task10/screenshots/moderator-${info.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: info.outputPath('moderator.png'), fullPage: true });
   await page.setViewportSize({ width: 320, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
@@ -59,8 +57,7 @@ test('administrator edits identity and confirms new status, then can mutate with
   await expect(form.getByLabel('minecraft nickname', { exact: true })).toHaveValue('Subject_Name');
   await form.getByLabel('new status', { exact: true }).selectOption('banned');
   await form.getByLabel('change reason', { exact: true }).fill('Rule violations');
-  await mkdir('/tmp/opencode/task10/screenshots', { recursive: true });
-  await page.screenshot({ path: `/tmp/opencode/task10/screenshots/admin-${info.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: info.outputPath('admin.png'), fullPage: true });
   page.once('dialog', async (dialog) => { expect(dialog.message()).toContain('Subject_Name'); expect(dialog.message()).toContain('banned'); await dialog.accept(); });
   await form.getByRole('button', { name: 'save changes', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('changes saved');

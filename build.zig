@@ -128,6 +128,24 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("pq");
     b.installArtifact(exe);
 
+    const release_server = b.addTest(.{
+        .name = "release-api",
+        .root_source_file = b.path("test/release_server.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = &.{"release_server"},
+    });
+    release_server.root_module.addImport("db_pool", pool_module);
+    release_server.root_module.addImport("config", config_module);
+    release_server.root_module.addImport("http_server", http_server_module);
+    release_server.root_module.addImport("discord", discord_module);
+    release_server.root_module.addImport("auth_routes", auth_routes_module);
+    release_server.root_module.addImport("migrations", migrations_module);
+    release_server.linkLibC();
+    release_server.linkSystemLibrary("pq");
+    const install_release = b.addInstallArtifact(release_server, .{});
+    b.step("release-server", "Build only the isolated release test server").dependOn(&install_release.step);
+
     const unit_tests = b.addTest(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,

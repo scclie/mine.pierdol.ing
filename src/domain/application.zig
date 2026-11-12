@@ -1,4 +1,11 @@
 const types = @import("types.zig");
+const std = @import("std");
+const nickname = @import("nickname.zig");
+
+/// self-service resubmission never changes identity, even for admins.
+pub fn requireUnchangedNickname(current: []const u8, proposed: nickname.CanonicalNickname) !void {
+    if (!std.mem.eql(u8, current, proposed.display())) return error.NicknameImmutable;
+}
 
 /// describes state edges, not authorization. administrator-only change_user_status permission at the call site for ban/unban edges additionally need the
 pub fn canTransition(from: types.ApplicationStatus, to: types.ApplicationStatus) bool {

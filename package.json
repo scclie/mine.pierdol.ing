@@ -4,7 +4,9 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node -e \"console.log('No frontend development server is configured yet.')\"",
-    "test:e2e": "npm run build && playwright test"
+    "test:zig": "node scripts/test-zig.mjs",
+    "test:e2e": "node scripts/test-e2e.mjs",
+    "test": "npm run test:zig && npm run build && npm run test:e2e"
   },
   "devDependencies": {
     "@playwright/test": "1.65.0"

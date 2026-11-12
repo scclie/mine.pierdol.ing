@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { buildCommitFrom, injectBuildCommit } from './build-commit.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+process.umask(0o077);
 const zine = process.env.ZINE_BIN || 'zine';
 const version = spawnSync(zine, ['version'], { encoding: 'utf8' });
 if (version.status !== 0 || `${version.stdout || ''}${version.stderr || ''}`.trim() !== '0.13.0') {
@@ -13,7 +14,8 @@ if (version.status !== 0 || `${version.stdout || ''}${version.stderr || ''}`.tri
 }
 
 // keep source paths unchanged and adapt only during build
-const stage = await mkdtemp('/tmp/opencode/mine-zine-');
+await mkdir('/tmp/opencode/task12-fix-2', { recursive: true, mode: 0o700 });
+const stage = await mkdtemp('/tmp/opencode/task12-fix-2/build-');
 try {
   await mkdir(join(stage, 'content'), { recursive: true });
   await mkdir(join(stage, 'layouts/templates'), { recursive: true });
@@ -35,7 +37,7 @@ try {
   for (const directory of ['css', 'js']) {
     await cp(join(root, 'assets', directory), join(stage, 'assets', directory), { recursive: true });
   }
-  const result = spawnSync(zine, ['release'], { cwd: stage, stdio: 'inherit' });
+  const result = spawnSync(zine, ['release'], { cwd: stage, stdio: 'inherit', env: { ...process.env, TMPDIR: stage, XDG_CACHE_HOME: join(stage, 'cache') } });
   if (result.status !== 0) throw new Error(`Zine build failed (${result.signal || result.status}).`);
   await cp(join(stage, 'public'), join(root, 'public'), { recursive: true });
 } finally {

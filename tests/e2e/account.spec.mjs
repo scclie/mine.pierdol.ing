@@ -1,5 +1,4 @@
 import { test, expect } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
 import { accountApi, signIn, fillApplication } from '../support/account-api.mjs';
 
 test('new player signs in; cracked password clears on licensed submission', async ({ page }, info) => {
@@ -7,6 +6,7 @@ test('new player signs in; cracked password clears on licensed submission', asyn
   await signIn(page);
   await expect(page.getByRole('heading', { name: 'account', exact: true })).toBeVisible();
   await expect(page.locator('[data-nickname-row]')).toBeHidden();
+  await expect(page.getByLabel('minecraft nickname', { exact: true })).toBeEditable();
   await expect(page.locator('[data-reason-row]')).toBeHidden();
   await fillApplication(page);
   await page.getByLabel('client type', { exact: true }).selectOption('cracked');
@@ -16,8 +16,7 @@ test('new player signs in; cracked password clears on licensed submission', asyn
   await expect(password).toHaveAttribute('autocomplete', 'new-password');
   await expect(password).toHaveAccessibleDescription(/at least 12/);
   await password.fill('blue-harbor-falcon-2026');
-  await mkdir('/tmp/opencode/task10/screenshots', { recursive: true });
-  await page.screenshot({ path: `/tmp/opencode/task10/screenshots/account-${info.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: info.outputPath('account.png'), fullPage: true });
   await page.getByLabel('client type', { exact: true }).selectOption('licensed');
   await expect(password).toBeHidden();
   await expect(password).toHaveValue('');
@@ -52,10 +51,14 @@ test('retryable rejection shows literal reason and resubmits with PATCH', async 
   await expect(page.locator('[data-decision-reason]')).toHaveText('Please explain <b>more</b>.');
   await expect(page.locator('[data-decision-reason] b')).toHaveCount(0);
   await expect(page.getByLabel('minecraft nickname', { exact: true })).toHaveValue('Subject_Name');
-  await fillApplication(page);
+  await expect(page.getByLabel('minecraft nickname', { exact: true })).not.toBeEditable();
+  await expect(page.getByLabel('minecraft nickname', { exact: true })).toHaveAttribute('readonly', '');
+  await page.getByLabel('about me', { exact: true }).fill('Updated detail.');
+  await page.getByLabel('discovery source', { exact: true }).fill('Friend');
   await page.getByRole('button', { name: 'resubmit application', exact: true }).click();
   await expect(page.locator('[data-account-state]')).toHaveText('pending');
   expect(api.mutations[0].method).toBe('PATCH');
+  expect(api.mutations[0].body.minecraft_nickname).toBe('Subject_Name');
 });
 
 for (const status of ['rejected_final', 'banned', 'pending', 'approved']) {

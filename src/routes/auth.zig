@@ -71,11 +71,24 @@ fn beginLogin(context: *anyopaque, request: http.Request, _: []const u8) !respon
     var result = try response.Response.init(router.allocator, 302, "");
     errdefer result.deinit();
     try result.addSensitiveHeader("Location", redirect.location);
+    try addOauthCookie(router, &result, redirect.browser_binding, 600);
+    try oauthResponseHeaders(&result);
     return result;
 }
 
 fn completeCallback(context: *anyopaque, request: http.Request, request_id: []const u8) !response.Response {
     const router: *Router = @ptrCast(@alignCast(context));
+    var result = try callbackResponse(router, request, request_id);
+    errdefer result.deinit();
+    // preserve mine_session on failure.
+    // clear only the pre-auth cookie, even after a consumed oauth attempt.
+    try addOauthCookie(router, &result, "", 0);
+    try oauthResponseHeaders(&result);
+    return result;
+}
+
+fn callbackResponse(router: *Router, request: http.Request, request_id: []const u8) !response.Response {
+    const binding = oauthBinding(router, request.cookie) orelse return oauthStateError(router.allocator, request_id);
     const raw_code = queryValue(request.target, "code") orelse return oauthStateError(router.allocator, request_id);
     const raw_state = queryValue(request.target, "state") orelse return oauthStateError(router.allocator, request_id);
     const code = try decodeQueryValue(router.allocator, raw_code);
@@ -88,7 +101,7 @@ fn completeCallback(context: *anyopaque, request: http.Request, request_id: []co
         @memset(state, 0);
         router.allocator.free(state);
     }
-    var completed = router.discord_service.completeCallback(code, state) catch |err| switch (err) {
+    var completed = router.discord_service.completeCallback(code, state, binding) catch |err| switch (err) {
         error.OauthStateInvalid => return oauthStateError(router.allocator, request_id),
         else => return errors.errorResponse(router.allocator, 502, "oauth_provider_error", "OAuth provider authentication failed.", request_id),
     };
@@ -109,6 +122,39 @@ fn completeCallback(context: *anyopaque, request: http.Request, request_id: []co
     errdefer result.deinit();
     try addSessionCookie(router, &result, &issued.session_token, 2592000);
     return result;
+}
+
+fn oauthCookieName(router: *Router) []const u8 {
+    return if (router.configuration.development_mode) "mine_oauth" else "__Host-mine_oauth";
+}
+
+fn oauthBinding(router: *Router, cookie: ?[]const u8) ?[]const u8 {
+    var fields = std.mem.splitScalar(u8, cookie orelse return null, ';');
+    var binding: ?[]const u8 = null;
+    while (fields.next()) |raw| {
+        const field = std.mem.trim(u8, raw, " \t");
+        const equal = std.mem.indexOfScalar(u8, field, '=') orelse continue;
+        if (!std.mem.eql(u8, field[0..equal], oauthCookieName(router))) continue;
+        if (binding != null) return null;
+        binding = field[equal + 1 ..];
+    }
+    const value = binding orelse return null;
+    return if (discord.validAttemptSecret(value)) value else null;
+}
+
+fn addOauthCookie(router: *Router, result: *response.Response, token: []const u8, max_age: u32) !void {
+    const secure = if (router.configuration.development_mode) "" else "; Secure";
+    const cookie = try std.fmt.allocPrint(router.allocator, "{s}={s}; Path=/; HttpOnly; SameSite=Lax; Max-Age={d}{s}", .{ oauthCookieName(router), token, max_age, secure });
+    defer {
+        std.crypto.utils.secureZero(u8, cookie);
+        router.allocator.free(cookie);
+    }
+    try result.addSensitiveHeader("Set-Cookie", cookie);
+}
+
+fn oauthResponseHeaders(result: *response.Response) !void {
+    try result.addHeader("Cache-Control", "no-store");
+    try result.addHeader("Referrer-Policy", "no-referrer");
 }
 
 fn addSessionCookie(router: *Router, result: *response.Response, token: []const u8, max_age: u32) !void {

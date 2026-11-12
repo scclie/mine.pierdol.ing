@@ -36,6 +36,7 @@ function applicationForm(application) {
   const submit = form.querySelector('[type=submit]');
   submit.textContent = account.actions.can_resubmit ? 'resubmit application' : 'submit application';
   fields.minecraft_nickname.value = application?.minecraft_nickname || '';
+  fields.minecraft_nickname.readOnly = Boolean(application);
   fields.client_type.value = application?.client_type || 'licensed';
   const togglePassword = () => {
     const cracked = fields.client_type.value === 'cracked';

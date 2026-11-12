@@ -12,12 +12,15 @@ pub const DiscordIdentity = struct {
 pub const AuthorizationRedirect = struct {
     location: []u8,
     state: []u8,
+    browser_binding: []u8,
 
     pub fn deinit(self: *AuthorizationRedirect, allocator: std.mem.Allocator) void {
         @memset(self.location, 0);
         allocator.free(self.location);
         @memset(self.state, 0);
         allocator.free(self.state);
+        std.crypto.utils.secureZero(u8, self.browser_binding);
+        allocator.free(self.browser_binding);
     }
 };
 
@@ -78,6 +81,12 @@ pub const DiscordService = struct {
         var verifier_bytes: [32]u8 = undefined;
         std.crypto.random.bytes(&verifier_bytes);
         defer @memset(&verifier_bytes, 0);
+        var binding_bytes: [32]u8 = undefined;
+        std.crypto.random.bytes(&binding_bytes);
+        defer std.crypto.utils.secureZero(u8, &binding_bytes);
+        var binding: [43]u8 = undefined;
+        defer std.crypto.utils.secureZero(u8, &binding);
+        encodeBase64Url(&binding_bytes, &binding);
 
         var state: [43]u8 = undefined;
         defer @memset(&state, 0);
@@ -85,7 +94,7 @@ pub const DiscordService = struct {
         var verifier: [43]u8 = undefined;
         defer @memset(&verifier, 0);
         encodeBase64Url(&verifier_bytes, &verifier);
-        var state_hash = sha256(&state);
+        var state_hash = attemptHash(&state, &binding);
         defer @memset(&state_hash, 0);
         var challenge_hash = sha256(&verifier);
         defer @memset(&challenge_hash, 0);
@@ -117,12 +126,17 @@ pub const DiscordService = struct {
             @memset(location, 0);
             self.allocator.free(location);
         }
-        return .{ .location = location, .state = try self.allocator.dupe(u8, &state) };
+        const state_copy = try self.allocator.dupe(u8, &state);
+        errdefer {
+            std.crypto.utils.secureZero(u8, state_copy);
+            self.allocator.free(state_copy);
+        }
+        return .{ .location = location, .state = state_copy, .browser_binding = try self.allocator.dupe(u8, &binding) };
     }
 
-    pub fn completeCallback(self: *DiscordService, code: []const u8, state: []const u8) !CompletedCallback {
-        if (code.len == 0 or state.len == 0) return error.OauthStateInvalid;
-        var state_hash = sha256(state);
+    pub fn completeCallback(self: *DiscordService, code: []const u8, state: []const u8, browser_binding: []const u8) !CompletedCallback {
+        if (code.len == 0 or !validAttemptSecret(state) or !validAttemptSecret(browser_binding)) return error.OauthStateInvalid;
+        var state_hash = attemptHash(state, browser_binding);
         defer @memset(&state_hash, 0);
         var state_parameter: [66]u8 = undefined;
         defer @memset(&state_parameter, 0);
@@ -171,6 +185,21 @@ pub const DiscordService = struct {
         return std.fmt.parseInt(i64, result.value(0, 0), 10);
     }
 };
+
+pub fn validAttemptSecret(value: []const u8) bool {
+    if (value.len != 43) return false;
+    for (value) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '-' and byte != '_') return false;
+    return true;
+}
+
+// use independent fixed-length secrets so url state cannot access stored attempts or pkce.
+// reject existing unbound attempts.
+fn attemptHash(state: []const u8, browser_binding: []const u8) [32]u8 {
+    var hash = std.crypto.hash.sha2.Sha256.init(.{});
+    hash.update(state);
+    hash.update(browser_binding);
+    return hash.finalResult();
+}
 
 pub fn sanitizeReturnPath(path: ?[]const u8) []const u8 {
     const value = path orelse return "/account";

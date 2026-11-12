@@ -126,12 +126,14 @@ test "oauth_route_test production HTTP uses a local TCP Discord provider" {
         const state = queryValue(location, "state").?;
         const target = try std.fmt.allocPrint(std.testing.allocator, "/api/v1/auth/discord/callback?code=test-code&state={s}", .{state});
         defer std.testing.allocator.free(target);
-        var callback = try server.dispatch(.{ .method = .GET, .target = target });
+        var callback = try server.dispatch(.{ .method = .GET, .target = target, .cookie = cookiePair(&login) });
         defer callback.deinit();
         thread.join();
         if (stub.failure) |failure| return failure;
         try std.testing.expectEqual(@as(u16, if (case == 0) 302 else 502), callback.status);
         if (case == 1) {
+            try expectNoSession(&callback);
+            try std.testing.expect(std.mem.indexOf(u8, callback.header("Set-Cookie").?, "Max-Age=0") != null);
             const code = try errorCode(callback.body);
             defer std.testing.allocator.free(code);
             try std.testing.expectEqualStrings("oauth_provider_error", code);
@@ -269,7 +271,7 @@ test "oauth_route_test Discord login uses PKCE and callbacks consume one-time st
 
     const callback_target = try std.fmt.allocPrint(std.testing.allocator, "/api/v1/auth/discord/callback?code=test-code&state={s}", .{state});
     defer std.testing.allocator.free(callback_target);
-    var callback_response = try server.dispatch(.{ .method = .GET, .target = callback_target });
+    var callback_response = try server.dispatch(.{ .method = .GET, .target = callback_target, .cookie = cookiePair(&login_response) });
     defer callback_response.deinit();
     try std.testing.expectEqual(@as(u16, 302), callback_response.status);
     try std.testing.expectEqualStrings("/account", callback_response.header("Location").?);
@@ -283,33 +285,123 @@ test "oauth_route_test Discord login uses PKCE and callbacks consume one-time st
     try std.testing.expect(local_discord.token_request_seen);
     try std.testing.expect(local_discord.identity_request_seen);
 
-    var reused_response = try server.dispatch(.{ .method = .GET, .target = callback_target });
+    var reused_response = try server.dispatch(.{ .method = .GET, .target = callback_target, .cookie = cookiePair(&login_response) });
     defer reused_response.deinit();
     try std.testing.expectEqual(@as(u16, 400), reused_response.status);
     const reused_code = try errorCode(reused_response.body);
     defer std.testing.allocator.free(reused_code);
     try std.testing.expectEqualStrings("oauth_state_invalid", reused_code);
 
-    var expired_hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash("expired-state", &expired_hash, .{});
-    var expired_hash_parameter: [66]u8 = undefined;
-    expired_hash_parameter[0] = '\\';
-    expired_hash_parameter[1] = 'x';
-    const hex = "0123456789abcdef";
-    for (expired_hash, 0..) |byte, index| {
-        expired_hash_parameter[index * 2 + 2] = hex[byte >> 4];
-        expired_hash_parameter[index * 2 + 3] = hex[byte & 0x0f];
-    }
+    var expired_login = try server.dispatch(.{ .method = .GET, .target = "/api/v1/auth/discord" });
+    defer expired_login.deinit();
     var expired_insert = try test_database.pool.query(
-        "INSERT INTO oauth_states (state_hash, pkce_verifier, return_path, expires_at) VALUES ($1::bytea, $2, $3, now() - INTERVAL '1 second')",
-        &.{ &expired_hash_parameter, "unused-verifier", "/account" },
+        "UPDATE oauth_states SET expires_at = now() - INTERVAL '1 second'",
+        &.{},
     );
     expired_insert.deinit();
-    var expired_response = try server.dispatch(.{ .method = .GET, .target = "/api/v1/auth/discord/callback?code=test-code&state=expired-state" });
+    const expired_target = try std.fmt.allocPrint(std.testing.allocator, "/api/v1/auth/discord/callback?code=test-code&state={s}", .{queryValue(expired_login.header("Location").?, "state").?});
+    defer std.testing.allocator.free(expired_target);
+    local_discord.token_request_seen = false;
+    var expired_response = try server.dispatch(.{ .method = .GET, .target = expired_target, .cookie = cookiePair(&expired_login) });
     defer expired_response.deinit();
     try std.testing.expectEqual(@as(u16, 400), expired_response.status);
     const expired_code = try errorCode(expired_response.body);
     defer std.testing.allocator.free(expired_code);
     try std.testing.expectEqualStrings("oauth_state_invalid", expired_code);
+    try expectNoSession(&expired_response);
+    try std.testing.expect(!local_discord.token_request_seen);
     _ = db;
+}
+
+fn cookiePair(result: *const response.Response) []const u8 {
+    const header = result.header("Set-Cookie").?;
+    return header[0..std.mem.indexOfScalar(u8, header, ';').?];
+}
+
+fn expectNoSession(result: *const response.Response) !void {
+    for (result.headers.items) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "Set-Cookie"))
+            try std.testing.expect(!std.mem.startsWith(u8, header.value, "mine_session="));
+    }
+}
+
+test "oauth_route_test independent browsers cannot swap login sessions and binding cookies are secure" {
+    var database = try postgres.TestDatabase.create(std.testing.allocator, std.posix.getenv("TEST_DATABASE_URL") orelse return error.MissingTestDatabaseUrl);
+    defer database.deinit();
+    try migrations.apply(&database.pool);
+    try setValidEnvironment();
+    var loaded = try config.Config.load(std.testing.allocator);
+    defer loaded.deinit();
+    var endpoint = LocalDiscordEndpoint{};
+    var service = discord.DiscordService.init(std.testing.allocator, &database.pool, &loaded, .{
+        .authorization_endpoint = "http://local-discord/authorize",
+        .exchange = LocalDiscordEndpoint.exchange,
+        .identity = LocalDiscordEndpoint.identity,
+        .context = &endpoint,
+    });
+    var router = try auth_routes.Router.init(std.testing.allocator, &service, &loaded);
+    defer router.deinit();
+    var server = http.Server.init(std.testing.allocator);
+    defer server.deinit();
+    try auth_routes.register(&server, &router);
+    for ([_]bool{ true, false }) |development| {
+        loaded.development_mode = development;
+        var a = try server.dispatch(.{ .method = .GET, .target = "/api/v1/auth/discord" });
+        defer a.deinit();
+        var b = try server.dispatch(.{ .method = .GET, .target = "/api/v1/auth/discord" });
+        defer b.deinit();
+        const target = try std.fmt.allocPrint(std.testing.allocator, "/api/v1/auth/discord/callback?code=test-code&state={s}", .{queryValue(a.header("Location").?, "state").?});
+        defer std.testing.allocator.free(target);
+        endpoint.token_request_seen = false;
+        var missing = try server.dispatch(.{ .method = .GET, .target = target, .cookie = "mine_session=" ++ "a" ** 64 });
+        defer missing.deinit();
+        try std.testing.expectEqual(@as(u16, 400), missing.status);
+        try expectNoSession(&missing);
+        try std.testing.expect(!endpoint.token_request_seen);
+        for ([_]*response.Response{ &a, &b }) |login| {
+            try std.testing.expect(login.header("Set-Cookie") != null);
+            const cookie = login.header("Set-Cookie").?;
+            try std.testing.expect(sensitiveHeader(login, "Set-Cookie").?);
+            for ([_][]const u8{ "; Path=/", "; HttpOnly", "; SameSite=Lax", "; Max-Age=600" }) |attribute|
+                try std.testing.expect(std.mem.indexOf(u8, cookie, attribute) != null);
+            try std.testing.expectEqual(!development, std.mem.indexOf(u8, cookie, "; Secure") != null);
+            try std.testing.expect(std.mem.indexOf(u8, cookie, "Domain=") == null);
+            try std.testing.expect(std.mem.startsWith(u8, cookie, if (development) "mine_oauth=" else "__Host-mine_oauth="));
+            const pair = cookiePair(login);
+            const secret = pair[std.mem.indexOfScalar(u8, pair, '=').? + 1 ..];
+            try std.testing.expectEqual(@as(usize, 43), secret.len);
+            try std.testing.expect(std.mem.indexOf(u8, login.header("Location").?, secret) == null);
+        }
+        try std.testing.expect(!std.mem.eql(u8, cookiePair(&a), cookiePair(&b)));
+        const foreign_cookie = try std.fmt.allocPrint(std.testing.allocator, "{s}; mine_session={s}", .{ cookiePair(&b), "b" ** 64 });
+        defer std.testing.allocator.free(foreign_cookie);
+        const duplicate_cookie = try std.fmt.allocPrint(std.testing.allocator, "{s}; {s}", .{ cookiePair(&a), cookiePair(&a) });
+        defer std.testing.allocator.free(duplicate_cookie);
+        for ([_][]const u8{ foreign_cookie, duplicate_cookie, "mine_oauth=malformed" }) |cookie| {
+            var rejected = try server.dispatch(.{ .method = .GET, .target = target, .cookie = cookie });
+            defer rejected.deinit();
+            try std.testing.expectEqual(@as(u16, 400), rejected.status);
+            try expectNoSession(&rejected);
+            try std.testing.expect(!endpoint.token_request_seen);
+        }
+        var valid = try server.dispatch(.{ .method = .GET, .target = target, .cookie = cookiePair(&a) });
+        defer valid.deinit();
+        try std.testing.expectEqual(@as(u16, 302), valid.status);
+        try std.testing.expect(std.mem.startsWith(u8, valid.header("Set-Cookie").?, "mine_session="));
+        var expired_binding = false;
+        for (valid.headers.items) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, "Set-Cookie") and !std.mem.startsWith(u8, header.value, "mine_session=")) {
+                expired_binding = std.mem.indexOf(u8, header.value, "Max-Age=0") != null;
+                try std.testing.expect(header.sensitive);
+                try std.testing.expectEqual(!development, std.mem.indexOf(u8, header.value, "; Secure") != null);
+            }
+        }
+        try std.testing.expect(expired_binding);
+        endpoint.token_request_seen = false;
+        var replay = try server.dispatch(.{ .method = .GET, .target = target, .cookie = cookiePair(&a) });
+        defer replay.deinit();
+        try std.testing.expectEqual(@as(u16, 400), replay.status);
+        try expectNoSession(&replay);
+        try std.testing.expect(!endpoint.token_request_seen);
+    }
 }

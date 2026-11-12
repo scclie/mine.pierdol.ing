@@ -86,6 +86,7 @@ fn errorResponse(allocator: std.mem.Allocator, err: anyerror, request_id: []cons
         error.PasswordNotApplicable => .{ .status = 409, .code = "password_not_applicable" },
         error.PasswordChangeNotAllowed => .{ .status = 409, .code = "password_change_not_allowed" },
         error.NicknameUnavailable => .{ .status = 409, .code = "nickname_unavailable" },
+        error.NicknameImmutable => .{ .status = 409, .code = "nickname_immutable" },
         error.InvalidJson => .{ .status = 400, .code = "invalid_json" },
         error.PasswordRequiredForCracked => .{ .status = 422, .code = "password_required_for_cracked" },
         error.PasswordNotAllowedForLicensed => .{ .status = 422, .code = "password_not_allowed_for_licensed" },

@@ -62,6 +62,14 @@ test "domain_application_test nicknames preserve display case but share a lowerc
     }
 }
 
+test "domain_application_test retry submissions preserve exact display nickname including case" {
+    const original = try nickname.validateNickname("Example_Name");
+    try application.requireUnchangedNickname("Example_Name", original);
+    for ([_][]const u8{ "example_name", "Other_Name" }) |value| {
+        try std.testing.expectError(error.NicknameImmutable, application.requireUnchangedNickname("Example_Name", try nickname.validateNickname(value)));
+    }
+}
+
 test "domain_application_test nicknames reject invalid length and non Minecraft characters" {
     const invalid = [_][]const u8{
         "",       "a",      "ab",   "abcdefghijklmnopq", "a-b",

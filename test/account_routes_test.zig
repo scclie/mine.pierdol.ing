@@ -13,6 +13,7 @@ const domain = @import("domain");
 
 const cracked = "{\"minecraft_nickname\":\" Example_Name \",\"client_type\":\"cracked\",\"about_me\":\" I build rail systems. \",\"discovery_source\":\" Friend \",\"password\":\"blue-harbor-falcon-2026\"}";
 const licensed = "{\"minecraft_nickname\":\"Licensed_Name\",\"client_type\":\"licensed\",\"about_me\":\"I build.\",\"discovery_source\":\"Friend\"}";
+const retry_licensed = "{\"minecraft_nickname\":\" Example_Name \",\"client_type\":\"licensed\",\"about_me\":\"I build.\",\"discovery_source\":\"Friend\"}";
 const replacement = "{\"password\":\"blue-harbor-falcon-2027\"}";
 
 const Fixture = struct {
@@ -365,13 +366,13 @@ test "account_routes_test cracked create retry and password changes persist once
     try f.sql("UPDATE applications SET status = 'rejected_retryable', decision_reason = 'Try again', decided_at = now(), decided_by_user_id = 1, submitted_at = now() - INTERVAL '1 day'");
     try f.actions(false, true, false);
     const retry_token = try f.csrf();
-    var retried = try f.mutate(.PATCH, "/api/v1/account/application", licensed, &retry_token);
+    var retried = try f.mutate(.PATCH, "/api/v1/account/application", retry_licensed, &retry_token);
     defer retried.deinit();
     try std.testing.expectEqual(@as(u16, 200), retried.status);
     try expectPending(retried.body);
     try f.audits("2");
     try f.expectSql("SELECT count(*) FROM audit_log WHERE action = 'application_resubmitted'", "1");
-    try f.expectSql("SELECT minecraft_nickname || ':' || client_type || ':' || about_me FROM applications", "Licensed_Name:licensed:I build.");
+    try f.expectSql("SELECT minecraft_nickname || ':' || client_type || ':' || about_me FROM applications", "Example_Name:licensed:I build.");
     try f.expectSql("SELECT (decision_reason IS NULL AND decided_at IS NULL AND decided_by_user_id IS NULL AND submitted_at > now() - INTERVAL '1 minute')::text FROM applications", "true");
     try f.expectSql("SELECT count(*) FROM password_credentials", "0");
     try f.sql("UPDATE applications SET status = 'rejected_retryable', decision_reason = 'Try cracked'");
@@ -497,7 +498,7 @@ test "account_routes_test resubmit and password audit failures roll back content
     try f.sql("UPDATE applications SET status = 'rejected_retryable', decision_reason = 'Retry', decided_at = now(), decided_by_user_id = 1");
     try f.sql("ALTER TABLE audit_log ADD CONSTRAINT fail_task7 CHECK (action <> 'application_resubmitted')");
     const retry_token = try f.csrf();
-    var failed_retry = try f.mutate(.PATCH, "/api/v1/account/application", licensed, &retry_token);
+    var failed_retry = try f.mutate(.PATCH, "/api/v1/account/application", retry_licensed, &retry_token);
     defer failed_retry.deinit();
     try expectError(&failed_retry, 500, "internal_error");
     try f.expectSql("SELECT minecraft_nickname || ':' || client_type || ':' || status || ':' || decision_reason FROM applications", "Example_Name:cracked:rejected_retryable:Retry");
@@ -524,6 +525,101 @@ test "account_routes_test resubmit and password audit failures roll back content
     defer changed.deinit();
     try std.testing.expectEqual(@as(u16, 204), changed.status);
     try f.audits("3");
+}
+
+test "account_routes_test retry nickname rename rejects without changing application credential audit or CSRF" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    // self-service rules apply
+    try f.create(cracked);
+    try f.sql("UPDATE applications SET status='rejected_retryable',decision_reason='Keep identity',decided_at=now(),decided_by_user_id=1");
+    const token = try f.csrf();
+    const snapshot = "SELECT json_build_object('application',(SELECT row_to_json(a) FROM applications a),'credential',(SELECT row_to_json(c) FROM password_credentials c),'audit',(SELECT json_agg(a ORDER BY id) FROM audit_log a),'sessions',(SELECT json_agg(s ORDER BY id) FROM web_sessions s))::text";
+    var before = try f.database.pool.query(snapshot, &.{});
+    defer before.deinit();
+    for ([_][]const u8{ "Renamed_Player", "example_name" }) |name| {
+        const body = try std.fmt.allocPrint(std.testing.allocator, "{{\"minecraft_nickname\":\"{s}\",\"client_type\":\"licensed\",\"about_me\":\"Changed content\",\"discovery_source\":\"Changed source\"}}", .{name});
+        defer std.testing.allocator.free(body);
+        var rejected = try f.mutate(.PATCH, "/api/v1/account/application", body, &token);
+        defer rejected.deinit();
+        try expectError(&rejected, 409, "nickname_immutable");
+        try f.expectSql(snapshot, before.value(0, 0));
+    }
+    // the very same token remains usable; harmless trim is not a rename.
+    var valid = try f.mutate(.PATCH, "/api/v1/account/application", retry_licensed, &token);
+    defer valid.deinit();
+    try std.testing.expectEqual(@as(u16, 200), valid.status);
+    try f.expectSql("SELECT minecraft_nickname || ':' || minecraft_nickname_normalized || ':' || client_type || ':' || about_me FROM applications", "Example_Name:example_name:licensed:I build.");
+    try f.audits("2");
+}
+
+test "account_routes_test retry rechecks nickname after waiting for the application lock" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.create(licensed);
+    try f.sql("UPDATE applications SET status='rejected_retryable',decision_reason='Retry'");
+    const token = try f.csrf();
+    const Pool = @TypeOf(f.database.pool);
+    var control = try Pool.open(std.testing.allocator, f.database.database_url);
+    defer control.close();
+    var transaction = try control.begin();
+    var released = false;
+    defer if (!released) transaction.rollback() catch {};
+    var locked = try transaction.query("SELECT user_id FROM applications FOR UPDATE", &.{});
+    locked.deinit();
+    const Worker = struct {
+        fixture: *Fixture,
+        token: []const u8,
+        status: u16 = 0,
+        failure: ?anyerror = null,
+        done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        fn run(self: *@This()) void {
+            defer self.done.store(true, .release);
+            var result = self.fixture.mutate(.PATCH, "/api/v1/account/application", licensed, self.token) catch |err| {
+                self.failure = err;
+                return;
+            };
+            defer result.deinit();
+            self.status = result.status;
+        }
+    };
+    var worker = Worker{ .fixture = &f, .token = &token };
+    const thread = try std.Thread.spawn(.{}, Worker.run, .{&worker});
+    defer thread.join();
+    // always release the lock before joining, including assertion failures
+    defer if (!released) {
+        transaction.rollback() catch {};
+        released = true;
+    };
+    var waiting = false;
+    for (0..5000) |_| {
+        var refreshed = try transaction.query("SELECT pg_stat_clear_snapshot()", &.{});
+        refreshed.deinit();
+        var activity = try transaction.query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE 'SELECT status, client_type, minecraft_nickname%')::text", &.{});
+        waiting = std.mem.eql(u8, activity.value(0, 0), "true");
+        activity.deinit();
+        if (waiting or worker.done.load(.acquire)) break;
+        std.time.sleep(std.time.ns_per_ms);
+    }
+    try std.testing.expect(waiting);
+    // simulate an admin rename while a self-service request waits
+    // on the row after reading stale account data
+    var renamed = try transaction.query("UPDATE applications SET minecraft_nickname='Admin_Renamed',minecraft_nickname_normalized='admin_renamed'", &.{});
+    renamed.deinit();
+    try transaction.commit();
+    released = true;
+    while (!worker.done.load(.acquire)) std.Thread.yield() catch {};
+    if (worker.failure) |failure| return failure;
+    try std.testing.expectEqual(@as(u16, 409), worker.status);
+    try f.expectSql("SELECT minecraft_nickname || ':' || status || ':' || decision_reason FROM applications", "Admin_Renamed:rejected_retryable:Retry");
+    try f.audits("1");
+    // failure did not consume CSRF even after waiting on a concurrent edit.
+    const updated = "{\"minecraft_nickname\":\"Admin_Renamed\",\"client_type\":\"licensed\",\"about_me\":\"I build.\",\"discovery_source\":\"Friend\"}";
+    var retry = try f.mutate(.PATCH, "/api/v1/account/application", updated, &token);
+    defer retry.deinit();
+    try std.testing.expectEqual(@as(u16, 200), retry.status);
 }
 
 test "account_routes_test trimmed UTF-8 byte boundaries and nickname bounds are enforced" {

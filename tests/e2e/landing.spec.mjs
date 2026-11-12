@@ -1,5 +1,4 @@
 import { test, expect } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
 
 const endpoint = '**/api/v1/public/servers';
 
@@ -40,7 +39,9 @@ for (const [route, sourceName] of [['/', 'index'], ['/rules', 'rules'], ['/login
     const mobile = testInfo.project.name === 'mobile';
     const rem = mobile ? 14 : 17.28;
     await expect(footer).toContainText(`${sourceName}.smd`);
-    await expect(footer.getByText('01234567', { exact: true })).toBeVisible();
+    const sha = process.env.GITHUB_SHA || '';
+    const expectedCommit = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(sha) ? sha.slice(0, 8) : 'development';
+    await expect(footer.locator('.footer-commit')).toHaveText(expectedCommit);
     for (const [name, href] of [
       ['source', 'https://git.sccl.cc/scclie/mine.pierdol.ing'],
       ['built with zig zine', 'https://zine-ssg.io'],
@@ -74,8 +75,7 @@ for (const [route, sourceName] of [['/', 'index'], ['/rules', 'rules'], ['/login
       await expect(footer).toHaveCSS('gap', '7px');
       await expect(footer).toHaveCSS('text-align', 'center');
     }
-    await mkdir('/tmp/opencode/footer-reference/screenshots', { recursive: true });
-    await page.screenshot({ path: `/tmp/opencode/footer-reference/screenshots/${sourceName}-${testInfo.project.name}.png`, fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath(`${sourceName}.png`), fullPage: true });
     await page.setViewportSize({ width: 320, height: 844 });
     await expect(footer).toHaveCSS('flex-direction', 'column');
     await expect(footer).toHaveCSS('gap', '7px');
@@ -165,8 +165,7 @@ for (const route of ['/', '/login']) {
       await page.locator('main').focus();
     }
     await page.locator('main').blur();
-    await mkdir('/tmp/opencode/reference-alignment/screenshots', { recursive: true });
-    await page.screenshot({ path: `/tmp/opencode/reference-alignment/screenshots/${route === '/' ? 'landing' : 'login'}-${testInfo.project.name}.png`, fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath(`${route === '/' ? 'landing' : 'login'}.png`), fullPage: true });
     await page.setViewportSize({ width: 320, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
@@ -218,8 +217,7 @@ test('login entry opens the static Discord-only page', async ({ page }, testInfo
     }
   };
   await checkHeader();
-  await mkdir('/tmp/opencode/login-entry/screenshots', { recursive: true });
-  await page.screenshot({ path: `/tmp/opencode/login-entry/screenshots/landing-${testInfo.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('landing.png'), fullPage: true });
   await entry.click();
   await expect(page).toHaveURL(/\/login\/?$/);
   await expect(page.getByRole('heading', { level: 1, name: 'login', exact: true })).toBeVisible();
@@ -232,7 +230,7 @@ test('login entry opens the static Discord-only page', async ({ page }, testInfo
   await expect(page.getByRole('main').getByRole('link')).toHaveCount(1);
   await expect(page.locator('input, button, form')).toHaveCount(0);
   await expect(discord).toHaveCSS('border-radius', '0px');
-  await page.screenshot({ path: `/tmp/opencode/login-entry/screenshots/login-${testInfo.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('login.png'), fullPage: true });
   for (const name of ['skip to content', 'home', 'rules', '[ login ]']) {
     await page.keyboard.press('Tab');
     await expect(page.getByRole('link', { name, exact: true })).toBeFocused();
@@ -243,7 +241,7 @@ test('login entry opens the static Discord-only page', async ({ page }, testInfo
   await expect(discord).toBeFocused();
   await expect(discord).toHaveCSS('outline-style', 'solid');
   await expect(discord).toHaveCSS('outline-width', '2px');
-  await page.screenshot({ path: `/tmp/opencode/login-entry/screenshots/login-focus-${testInfo.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('login-focus.png'), fullPage: true });
   await page.setViewportSize({ width: 320, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
@@ -326,8 +324,7 @@ test('API redirects cannot send browser fetches outside the API prefix', async (
 test('public pages are keyboard navigable, readable, and visually reviewable', async ({ page }, testInfo) => {
   await page.goto('/');
   await page.waitForLoadState('networkidle');
-  await mkdir('/tmp/opencode/task9/screenshots', { recursive: true });
-  await page.screenshot({ path: `/tmp/opencode/task9/screenshots/landing-${testInfo.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('landing.png'), fullPage: true });
   await page.keyboard.press('Tab');
   const skip = page.getByRole('link', { name: 'Skip to content' });
   await expect(skip).toBeFocused();
@@ -347,7 +344,7 @@ test('public pages are keyboard navigable, readable, and visually reviewable', a
   await expect(page.getByRole('main')).toBeVisible();
   await expect(page.getByRole('main').getByRole('article')).toBeVisible();
   await expect(page.getByRole('main').getByRole('article')).toContainText(/\S/);
-  await page.screenshot({ path: `/tmp/opencode/task9/screenshots/rules-${testInfo.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('rules.png'), fullPage: true });
   for (const route of ['/', '/rules', '/login']) {
     await page.goto(route);
     await page.setViewportSize({ width: 320, height: 844 });

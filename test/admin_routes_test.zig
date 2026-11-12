@@ -466,11 +466,16 @@ test "admin_routes_test in-flight old OAuth callback cannot issue a live session
     defer login.deinit(std.testing.allocator);
     const target = try std.fmt.allocPrint(std.testing.allocator, "/api/v1/auth/discord/callback?code=unused&state={s}", .{login.state});
     defer std.testing.allocator.free(target);
+    const binding_cookie = try std.fmt.allocPrint(std.testing.allocator, "mine_oauth={s}", .{login.browser_binding});
+    defer {
+        std.crypto.utils.secureZero(u8, binding_cookie);
+        std.testing.allocator.free(binding_cookie);
+    }
     const token = try f.csrf();
     const patch = "{\"discord_id\":\"623456789012345678\"}";
     try execute(&control, "CREATE FUNCTION task8_gate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(888); RETURN NEW; END $$; CREATE TRIGGER task8_gate BEFORE INSERT ON web_sessions FOR EACH ROW EXECUTE FUNCTION task8_gate()");
     try execute(&control, "SELECT pg_advisory_lock(888)");
-    var callback = Worker{ .server = &server, .request = .{ .method = .GET, .target = target } };
+    var callback = Worker{ .server = &server, .request = .{ .method = .GET, .target = target, .cookie = binding_cookie } };
     const callback_thread = try std.Thread.spawn(.{}, Worker.run, .{&callback});
     defer callback_thread.join();
     // Always unblock before joining even when an assertion fails.
