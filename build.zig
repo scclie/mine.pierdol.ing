@@ -52,6 +52,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const runtime_module = b.createModule(.{
+        .root_source_file = b.path("src/runtime.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const health_module = b.createModule(.{
+        .root_source_file = b.path("src/routes/health.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    health_module.addImport("http_server", http_server_module);
     const discord_module = b.createModule(.{
         .root_source_file = b.path("src/services/discord.zig"),
         .target = target,
@@ -124,6 +135,8 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("http_server", http_server_module);
     exe.root_module.addImport("discord", discord_module);
     exe.root_module.addImport("auth_routes", auth_routes_module);
+    exe.root_module.addImport("health", health_module);
+    exe.root_module.addImport("runtime", runtime_module);
     exe.linkLibC();
     exe.linkSystemLibrary("pq");
     b.installArtifact(exe);
@@ -140,6 +153,7 @@ pub fn build(b: *std.Build) void {
     release_server.root_module.addImport("http_server", http_server_module);
     release_server.root_module.addImport("discord", discord_module);
     release_server.root_module.addImport("auth_routes", auth_routes_module);
+    release_server.root_module.addImport("health", health_module);
     release_server.root_module.addImport("migrations", migrations_module);
     release_server.linkLibC();
     release_server.linkSystemLibrary("pq");
@@ -283,6 +297,25 @@ pub fn build(b: *std.Build) void {
     });
     const run_wire_tests = b.addRunArtifact(wire_tests);
 
+    const runtime_tests = b.addTest(.{
+        .root_source_file = b.path("test/runtime_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    runtime_tests.root_module.addImport("runtime", runtime_module);
+    const run_runtime_tests = b.addRunArtifact(runtime_tests);
+
+    const health_route_tests = b.addTest(.{
+        .root_source_file = b.path("test/health_route_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    health_route_tests.root_module.addImport("http_server", http_server_module);
+    health_route_tests.root_module.addImport("health", health_module);
+    const run_health_route_tests = b.addRunArtifact(health_route_tests);
+
     const response_tests = b.addTest(.{
         .root_source_file = b.path("src/http/response.zig"),
         .target = target,
@@ -294,6 +327,8 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_response_tests.step);
     test_step.dependOn(&run_wire_tests.step);
+    test_step.dependOn(&run_runtime_tests.step);
+    test_step.dependOn(&run_health_route_tests.step);
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_domain_tests.step);
     test_step.dependOn(&run_migration_tests.step);

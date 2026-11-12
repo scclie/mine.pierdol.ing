@@ -1,0 +1,98 @@
+name: deploy
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: mine-platform-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: startsWith(github.server_url, 'http://10.69.0.10') || startsWith(github.server_url, 'https://git.sccl.cc')
+    runs-on: ubuntu-latest
+    env:
+      TASK12_ZIG_PREFIXES: /usr:/usr/lib/x86_64-linux-gnu
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install build and verification tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y ca-certificates curl xz-utils postgresql libpq-dev rsync docker.io
+          mkdir -p /tmp/opencode
+          TOOLS="$(mktemp -d /tmp/opencode/mine-ci-tools-XXXXXX)"
+          chmod 0755 "$TOOLS"
+          cd "$TOOLS"
+          curl --fail --show-error --location --proto '=https' --proto-redir '=https' -o zig.tar.xz https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+          printf '%s\n' 'd45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea  zig.tar.xz' | sha256sum --check --strict
+          tar -xJf zig.tar.xz
+          mkdir zine
+          curl --fail --show-error --location --proto '=https' --proto-redir '=https' -o zine.tar.xz https://github.com/kristoff-it/zine/releases/download/v0.13.0/x86_64-linux-musl.tar.xz
+          printf '%s\n' 'c250e029d978901b0c9a38eab0a860ef9db875bf686fe0f0abf61f180c280dba  zine.tar.xz' | sha256sum --check --strict
+          tar -xJf zine.tar.xz -C zine
+          echo "$TOOLS/zig-linux-x86_64-0.13.0" >> "$GITHUB_PATH"
+          echo "$TOOLS/zine" >> "$GITHUB_PATH"
+          pg_config --bindir >> "$GITHUB_PATH"
+
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          # the shared Node job image runs as root; initdb requires an unprivileged user.
+          chown postgres:postgres "$GITHUB_WORKSPACE"
+          mkdir -p public
+          chown -R postgres:postgres public
+          install -d -o postgres -g postgres -m 0755 /tmp/opencode
+          install -d -o postgres -g postgres -m 0700 /tmp/opencode/task12-fix-2
+          runuser -u postgres -- env PATH="$PATH" npm test
+
+      - name: Publish static site, image and digest request
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          RELEASE="$(date -u +%Y%m%dT%H%M%S)-${GITHUB_SHA::8}"
+          [[ "$RELEASE" =~ ^[0-9]{8}T[0-9]{6}-[0-9a-f]{8}$ ]]
+          export GITHUB_SHA
+          node scripts/build.mjs
+          REL="/tank/sites/mine/releases/${RELEASE}"
+          PUBLIC=/tank/sites/mine/public
+          LINK="/tank/sites/mine/public.${RELEASE}.tmp"
+          REQUEST="/publish/requests/mine-platform.digest.${RELEASE}.tmp"
+          if [ -e "$PUBLIC" ] && [ ! -L "$PUBLIC" ]; then
+            echo 'Refusing non-symlink public path' >&2
+            exit 1
+          fi
+          # mkdir/ln refuse collisions, including dangling symlinks.
+          mkdir -m 0755 "$REL"
+          test ! -e "$LINK"
+          test ! -L "$LINK"
+          test ! -e "$REQUEST"
+          test ! -L "$REQUEST"
+          trap 'rm -f -- "$LINK" "$REQUEST"' EXIT
+          rsync -a --delete --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r ./public/ "$REL/"
+          ln -s "releases/${RELEASE}" "$LINK"
+          mv -Tf -- "$LINK" "$PUBLIC"
+          # keep the current release plus five older releases by modification time.
+          find /tank/sites/mine/releases -mindepth 1 -maxdepth 1 -type d ! -name "$RELEASE" -printf '%T@ %f\0' |
+            sort -zrn | tail -z -n +6 | cut -z -d ' ' -f2- |
+            while IFS= read -r -d '' old; do
+              rm -rf -- "/tank/sites/mine/releases/$old"
+            done
+          IMG=10.69.0.17:5000/scclie/mine-platform:main
+          docker build --pull --no-cache -t "$IMG" .
+          docker push "$IMG"
+          REPO_DIGESTS="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMG")"
+          DIGEST=''
+          while IFS= read -r candidate; do
+            case "$candidate" in
+              "${IMG%:main}@"*) DIGEST="${candidate#*@}" ;;
+            esac
+          done <<< "$REPO_DIGESTS"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          (set -o noclobber; printf '%s\n' "$DIGEST" > "$REQUEST")
+          mv -Tf -- "$REQUEST" /publish/requests/mine-platform.digest

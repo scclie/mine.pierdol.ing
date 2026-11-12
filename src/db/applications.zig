@@ -122,7 +122,7 @@ pub const ApplicationRepository = struct {
         var transaction = try self.pool.begin();
         errdefer transaction.rollback() catch {};
 
-        // All account/admin mutations lock users before sessions.
+        // all account/admin mutations lock users before sessions.
         var owner = try transaction.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", &.{id});
         owner.deinit();
         var consumed = try transaction.query(
@@ -133,7 +133,7 @@ pub const ApplicationRepository = struct {
         consumed.deinit();
         if (!valid_session) return error.CsrfTokenInvalid;
 
-        // Lock the application too to prevent concurrent submissions.
+        // lock the application too to prevent concurrent submissions.
         var current = try transaction.query("SELECT status, client_type, minecraft_nickname FROM applications WHERE user_id = $1 FOR UPDATE", &.{id});
         defer current.deinit();
         const status = if (current.rowCount() == 1) std.meta.stringToEnum(types.ApplicationStatus, current.value(0, 0)).? else null;

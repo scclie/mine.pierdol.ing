@@ -1,10 +1,10 @@
-// test-only entry point
 const std = @import("std");
 const db = @import("db_pool");
 const config = @import("config");
 const http = @import("http_server");
 const discord = @import("discord");
 const routes = @import("auth_routes");
+const health = @import("health");
 const migrations = @import("migrations");
 
 test "release_server" {
@@ -25,6 +25,7 @@ test "release_server" {
     defer router.deinit();
     var server = http.Server.init(allocator);
     defer server.deinit();
+    try health.register(&server);
     try routes.register(&server, &router);
     try server.serve(configuration.http_listen_address);
 }

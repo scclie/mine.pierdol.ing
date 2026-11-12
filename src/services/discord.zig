@@ -193,7 +193,6 @@ pub fn validAttemptSecret(value: []const u8) bool {
 }
 
 // use independent fixed-length secrets so url state cannot access stored attempts or pkce.
-// reject existing unbound attempts.
 fn attemptHash(state: []const u8, browser_binding: []const u8) [32]u8 {
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
     hash.update(state);

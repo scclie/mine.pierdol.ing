@@ -424,7 +424,7 @@ fn execute(pool: *db.Pool, sql: []const u8) !void {
     result.deinit();
 }
 
-// Wait on an observed database condition, not a timing guess. Tests use separate connections.
+// wait on an observed database condition, not a timing guess. Tests use separate connections.
 fn waitForLock(pool: *db.Pool, worker: *Worker, advisory: bool) !void {
     const deadline = std.time.milliTimestamp() + 15000;
     while (std.time.milliTimestamp() < deadline) {
@@ -478,7 +478,7 @@ test "admin_routes_test in-flight old OAuth callback cannot issue a live session
     var callback = Worker{ .server = &server, .request = .{ .method = .GET, .target = target, .cookie = binding_cookie } };
     const callback_thread = try std.Thread.spawn(.{}, Worker.run, .{&callback});
     defer callback_thread.join();
-    // Always unblock before joining even when an assertion fails.
+    // always unblock before joining even when an assertion fails.
     defer execute(&control, "SELECT pg_advisory_unlock_all()") catch {};
     try waitForLock(&control, &callback, true);
     var edit = Worker{ .server = &f.server, .request = .{ .method = .PATCH, .target = "/api/v1/admin/users/2", .cookie = f.cookie, .csrf_token = &token, .body = patch, .content_type = "application/json", .content_length = patch.len } };

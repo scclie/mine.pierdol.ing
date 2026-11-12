@@ -16,7 +16,6 @@ pub const AuditAction = enum {
 };
 
 /// shows what changed before and after, without storing account data or secrets.
-/// unix timeshamp. strings until serialization.
 pub const AuditValues = struct {
     status: ?types.ApplicationStatus = null,
     nickname: ?[]const u8 = null,

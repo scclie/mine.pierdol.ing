@@ -54,7 +54,7 @@ pub const Response = struct {
 };
 
 test "sensitive header values are cleared before release while ordinary headers remain unchanged" {
-    // Debug and ReleaseSafe poison freed allocations before the allocator sees them.
+    // debug and ReleaseSafe modes poison freed allocations before the allocator sees them.
     if (@import("builtin").mode != .ReleaseFast and @import("builtin").mode != .ReleaseSmall) return error.SkipZigTest;
     const Observer = struct {
         backing: std.mem.Allocator,

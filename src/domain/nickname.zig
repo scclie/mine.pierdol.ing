@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// owns both values copies are independent.
+/// owns both values; copies are independent.
 pub const CanonicalNickname = struct {
     display_bytes: [16]u8 = [_]u8{0} ** 16,
     canonical_bytes: [16]u8 = [_]u8{0} ** 16,

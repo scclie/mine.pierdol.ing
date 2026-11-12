@@ -531,7 +531,6 @@ test "account_routes_test retry nickname rename rejects without changing applica
     var f: Fixture = undefined;
     try f.init();
     defer f.deinit();
-    // self-service rules apply
     try f.create(cracked);
     try f.sql("UPDATE applications SET status='rejected_retryable',decision_reason='Keep identity',decided_at=now(),decided_by_user_id=1");
     const token = try f.csrf();
@@ -604,8 +603,6 @@ test "account_routes_test retry rechecks nickname after waiting for the applicat
         std.time.sleep(std.time.ns_per_ms);
     }
     try std.testing.expect(waiting);
-    // simulate an admin rename while a self-service request waits
-    // on the row after reading stale account data
     var renamed = try transaction.query("UPDATE applications SET minecraft_nickname='Admin_Renamed',minecraft_nickname_normalized='admin_renamed'", &.{});
     renamed.deinit();
     try transaction.commit();

@@ -1,13 +1,12 @@
-// Shared local verification lifecycle. Never consumes DATABASE_URL from the caller.
+// shared local verification lifecycle; never consumes DATABASE_URL from the caller.
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, chmod, open, rm, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createServer } from 'node:net';
 import { appendFileSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { dirname, isAbsolute } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 
-// Nested verification subprocesses may themselves start detached groups. Only
+// nested verification subprocesses may themselves start detached groups. Only
 // accept private registries owned by actual ancestors, never caller-chosen PIDs.
 function ancestorRegistries() {
   const ancestors = new Set();
@@ -44,37 +43,6 @@ function groupMembers(pid) {
     .filter(member => member && member.group === pid && member.session === pid && member.state !== 'Z');
 }
 
-// Called by the browser supervisor inside Playwright's detached session.
-// Publish BEFORE browser startup and again before the supervisor exits, so a
-// surviving descendant still pins ownership after the leader disappears.
-export function registerBrowserGroup() {
-  const leader = identity(process.pid);
-  const registries = ancestorRegistries();
-  if (!registries.length || !leader || leader.group !== leader.pid || leader.session !== leader.pid) {
-    throw new Error('browser launch requires a verified local lifecycle owner');
-  }
-  // Establish authority while ancestry is known, then retain those exact private
-  // registry identities. Playwright's abrupt exit can reparent this supervisor;
-  // that must not revoke the outer owner's already established registration.
-  const authority = registries.map(file => ({ file, stat: statSync(file) }));
-  const register = () => {
-    const current = identity(process.pid);
-    if (!current || current.born !== leader.born || current.group !== leader.pid || current.session !== leader.pid) {
-      throw new Error('browser supervisor lost its verified session');
-    }
-    const group = { pid: leader.pid, born: leader.born, members: groupMembers(leader.pid) };
-    for (const { file, stat } of authority) {
-      const now = statSync(file);
-      if (realpathSync(file) !== file || !now.isFile() || now.ino !== stat.ino || now.dev !== stat.dev || now.uid !== stat.uid || (now.mode & 0o077)) {
-        throw new Error('browser registry identity changed');
-      }
-      appendFileSync(file, `${JSON.stringify(group)}\n`, { mode: 0o600 });
-    }
-  };
-  register();
-  return register;
-}
-
 export async function localRun(label, run) {
   process.umask(0o077);
   await mkdir('/tmp/opencode/task12-fix-2', { recursive: true, mode: 0o700 });
@@ -88,7 +56,6 @@ export async function localRun(label, run) {
   const children = [];
   const handles = [];
   const pendingStarts = new Set();
-  const finalizers = [];
   const controller = new AbortController();
   let closing = false;
   const interrupted = new Promise((_, reject) => {
@@ -104,7 +71,7 @@ export async function localRun(label, run) {
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PG'))),
     TMPDIR: `${directory}/secrets`, PGHOST: directory, PGUSER: 'postgres', PGDATABASE: 'postgres', PGPORT: '5432',
     DATABASE_URL: '', TEST_DATABASE_URL: '', PGPASSFILE: `${directory}/secrets/pgpass`, PGSERVICEFILE: '/dev/null',
-    TASK12_GROUP_REGISTRIES: JSON.stringify(registries), TASK12_SECRET_FILE: `${directory}/secrets/password-redactions.jsonl` };
+    TASK12_GROUP_REGISTRIES: JSON.stringify(registries) };
   function start(command, args, extra = {}, log) {
     const operation = (async () => {
       checkOpen();
@@ -144,14 +111,6 @@ export async function localRun(label, run) {
     if (result.code !== 0) throw new Error(`${command} failed (${result.code ?? result.signal})`);
   }
   const ready = (check, child) => race(wait(check, child, controller.signal));
-  const ownBrowser = async executable => {
-    checkOpen();
-    if (typeof executable !== 'string' || !isAbsolute(executable)) throw new Error('absolute browser executable required');
-    const wrapper = `${directory}/secrets/browser-launch`;
-    await writeFile(wrapper, `#!${process.execPath}\nimport { superviseBrowser } from ${JSON.stringify(fileURLToPath(new URL('./register-browser.mjs', import.meta.url)))};\nawait superviseBrowser(${JSON.stringify(executable)});\n`, { mode: 0o700, flag: 'wx' });
-    checkOpen();
-    return wrapper;
-  };
   const interrupt = () => {
     closing = true;
     controller.abort(new Error('verification interrupted'));
@@ -174,8 +133,7 @@ export async function localRun(label, run) {
       }, postgres);
       const database = `postgresql:///postgres?host=${directory}&user=postgres&port=5432`;
       env.TEST_DATABASE_URL = database;
-      await run({ directory, database, env, start, command, wait: ready, ownBrowser,
-        afterStop: action => { checkOpen(); finalizers.push(action); }, signal: controller.signal });
+      await run({ directory, database, env, start, command, wait: ready, signal: controller.signal });
     })());
   } finally {
     closing = true;
@@ -188,7 +146,6 @@ export async function localRun(label, run) {
     try {
       await Promise.allSettled([...pendingStarts]);
       // track ownership by process group, even after the leader exits.
-      // register browser sessions before exec.
       const groups = new Map();
       const retired = new Set();
       const seen = new Set();
@@ -205,7 +162,7 @@ export async function localRun(label, run) {
         });
         let owned = ownsMember();
         if (!owned && (!leader || leader.born === group.born) && groupMembers(pid).length) {
-          // reconcile the supervisor's final snapshot before retirement.
+          // reconcile a child's final snapshot before retirement.
           // never treat a live, unverified session as gone.
           for (const update of recordedGroups()) {
             if (update.pid === pid && update.born === group.born && Array.isArray(update.members)) group.members.push(...update.members);
@@ -215,7 +172,7 @@ export async function localRun(label, run) {
         }
         if (owned) {
           // snapshot child processes while the session is still verified.
-          // TERM may end the leader before node handles its exit.
+          // the leader may exit before node handles it.
           group.members = [...new Map([...group.members, ...groupMembers(pid)]
             .map(member => [`${member.pid}:${member.born}`, member])).values()];
           try { process.kill(-pid, signal); return true; }
@@ -268,9 +225,7 @@ export async function localRun(label, run) {
         throw new Error('owned process groups did not terminate; scratch preserved');
       });
       for (const handle of handles) await attempt(() => handle.close());
-      if (groupsGone) for (const finalize of finalizers) await attempt(finalize);
-      // workers are stopped first; neither browser teardown nor another cleanup
-      // error may prevent removal of database state and browser/worker scratch.
+      // stop workers before removing database state and private scratch.
       if (groupsGone) {
         await attempt(async () => { await rm(`${directory}/pg`, { recursive: true, force: true }); databaseRemoved = true; });
         await attempt(async () => { await rm(`${directory}/secrets`, { recursive: true, force: true }); secretsRemoved = true; });
@@ -283,7 +238,7 @@ export async function localRun(label, run) {
       if (errors.length) throw new AggregateError(errors, 'local verification cleanup failed');
       console.log(`Cleaned local child processes, disposable database and secret scratch: ${directory}`);
     } finally {
-      // Repeated catchable signals must not interrupt asynchronous teardown.
+      // repeated catchable signals must not interrupt asynchronous teardown.
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);
     }

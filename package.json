@@ -5,10 +5,7 @@
     "build": "node scripts/build.mjs",
     "dev": "node -e \"console.log('No frontend development server is configured yet.')\"",
     "test:zig": "node scripts/test-zig.mjs",
-    "test:e2e": "node scripts/test-e2e.mjs",
-    "test": "npm run test:zig && npm run build && npm run test:e2e"
-  },
-  "devDependencies": {
-    "@playwright/test": "1.65.0"
+    "test:release": "node --test tests/release-smoke.test.mjs",
+    "test": "npm run test:zig && node --test tests/runner-database.test.mjs && npm run build && npm run test:release"
   }
 }

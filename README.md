@@ -1,3 +1,3 @@
 # mine-api
 
-mine.pierdol.ing core api
+mine.pierdol.ing core
