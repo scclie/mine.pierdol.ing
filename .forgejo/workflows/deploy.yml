@@ -26,9 +26,9 @@ jobs:
           TOOLS="$(mktemp -d /tmp/opencode/mine-ci-tools-XXXXXX)"
           chmod 0755 "$TOOLS"
           cd "$TOOLS"
-          curl --fail --show-error --location --proto '=https' --proto-redir '=https' -o zig.tar.xz https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
-          printf '%s\n' 'd45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea  zig.tar.xz' | sha256sum --check --strict
-          tar -xJf zig.tar.xz
+          curl --fail --show-error --location --proto '=https' --proto-redir '=https' -o zig-x86_64-linux-0.13.0.tar.xz https://mirror.pierdol.ing/zig/0.13.0/zig-x86_64-linux-0.13.0.tar.xz
+          printf '%s\n' 'd45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea  zig-x86_64-linux-0.13.0.tar.xz' | sha256sum --check --strict
+          tar -xJf zig-x86_64-linux-0.13.0.tar.xz
           mkdir zine
           curl --fail --show-error --location --proto '=https' --proto-redir '=https' -o zine.tar.xz https://github.com/kristoff-it/zine/releases/download/v0.13.0/x86_64-linux-musl.tar.xz
           printf '%s\n' 'c250e029d978901b0c9a38eab0a860ef9db875bf686fe0f0abf61f180c280dba  zine.tar.xz' | sha256sum --check --strict
@@ -48,7 +48,7 @@ jobs:
           chown -R postgres:postgres public
           install -d -o postgres -g postgres -m 0755 /tmp/opencode
           install -d -o postgres -g postgres -m 0700 /tmp/opencode/task12-fix-2
-          runuser -u postgres -- env PATH="$PATH" npm test
+          runuser -u postgres -- env PATH="$PATH" C_INCLUDE_PATH=/usr/include/postgresql npm test
 
       - name: Publish static site, image and digest request
         shell: bash
