@@ -15,8 +15,11 @@
       <nav class="primary-nav" aria-label="Main navigation">
         <a href="/" aria-current="$page.custom.get('section').eql('home').then('page', 'false')">home</a>
         <a href="/rules" aria-current="$page.custom.get('section').eql('rules').then('page', 'false')">rules</a>
+        <a href="/admin/applications" data-header-moderation hidden>moderation</a>
       </nav>
-      <a class="login-entry" href="/login">[ login ]</a>
+      <div class="header-auth" data-header-auth>
+        <a class="login-entry" href="/login" data-header-login>[ login ]</a>
+      </div>
     </header>
     <main id="content" tabindex="-1">
       <super>
@@ -31,5 +34,6 @@
       <a class="symbol" href="https://sccl.cc" target="_blank" rel="noreferrer">sccl.cc</a>
     </footer>
   </div>
+  <script type="module" src="$site.asset('js/header.js').link()"></script>
 </body>
 </html>

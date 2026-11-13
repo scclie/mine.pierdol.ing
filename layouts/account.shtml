@@ -9,14 +9,13 @@
     <div data-account hidden>
       <p>signed in as <span data-display-name></span></p>
       <dl>
-        <div><dt>state</dt><dd data-account-state></dd></div>
+        <div><dt>state</dt><dd><span class="application-status" data-account-state></span></dd></div>
         <div data-nickname-row hidden><dt>nickname</dt><dd data-nickname></dd></div>
         <div data-reason-row hidden><dt>decision reason</dt><dd class="literal-text" data-decision-reason></dd></div>
       </dl>
       <p data-password-setup hidden>password setup required</p>
       <div data-controls></div>
       <div class="workflow-actions">
-        <a href="/admin/applications" data-moderation hidden>moderation queue</a>
         <button type="button" data-logout>sign out</button>
       </div>
     </div>

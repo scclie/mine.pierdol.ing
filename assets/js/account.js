@@ -1,4 +1,4 @@
-import { api, prepareForm, clearErrors, showError } from './api.js';
+import { api, accountState, refreshAccountState, logout, prepareForm, clearErrors, showError } from './api.js';
 
 const root = document.querySelector('[data-account]');
 const alert = document.querySelector('[data-error]');
@@ -14,20 +14,36 @@ function cloneForm(selector) {
 }
 
 function render(payload) {
+  if (!payload) throw new Error('account lookup failed');
   account = payload;
   root.hidden = false;
   document.querySelector('[data-display-name]').textContent = account.user.display_name;
   const application = account.application;
-  document.querySelector('[data-account-state]').textContent = application?.status || 'no application';
+  const state = document.querySelector('[data-account-state]');
+  const status = application?.status || 'no application';
+  state.textContent = status;
+  if (application) state.dataset.status = application.status;
+  else delete state.dataset.status;
   document.querySelector('[data-nickname-row]').hidden = !application;
   document.querySelector('[data-nickname]').textContent = application?.minecraft_nickname || '';
   document.querySelector('[data-reason-row]').hidden = application?.decision_reason == null;
   document.querySelector('[data-decision-reason]').textContent = application?.decision_reason ?? '';
   document.querySelector('[data-password-setup]').hidden = !account.password_setup_required;
-  document.querySelector('[data-moderation]').hidden = !['moderator', 'administrator'].includes(account.user.role);
   document.querySelector('[data-controls]').replaceChildren();
   if (account.actions.can_submit || account.actions.can_resubmit) applicationForm(application);
   if (account.actions.can_change_password) passwordForm();
+}
+
+async function mutationError(error, form) {
+  if (error.code === 'csrf_token_invalid') {
+    try {
+      const current = await refreshAccountState();
+      if (current) render(current);
+    } catch {
+      // keep mutation error if refresh fails.
+    }
+  }
+  showError(error, alert, form);
 }
 
 function applicationForm(application) {
@@ -59,10 +75,11 @@ function applicationForm(application) {
     busy = true;
     submit.disabled = true;
     try {
-      render(await api('/api/v1/account/application', { method: account.actions.can_resubmit ? 'PATCH' : 'POST', body, token: account.csrf_token }));
+      await api('/api/v1/account/application', { method: account.actions.can_resubmit ? 'PATCH' : 'POST', body, token: account.csrf_token });
+      render(await refreshAccountState());
       notice.textContent = 'application submitted';
     } catch (error) {
-      showError(error, alert, form);
+      await mutationError(error, form);
     } finally {
       busy = false;
       submit.disabled = false;
@@ -85,10 +102,10 @@ function passwordForm() {
     try {
       await api('/api/v1/account/password', { method: 'POST', body, token: account.csrf_token });
       // 204 consumes the token, reload the account before the next mutation.
-      render(await api('/api/v1/account'));
+      render(await refreshAccountState());
       notice.textContent = 'password saved';
     } catch (error) {
-      showError(error, alert, form);
+      await mutationError(error, form);
     } finally {
       busy = false;
       submit.disabled = false;
@@ -102,7 +119,9 @@ document.querySelector('[data-logout]').addEventListener('click', async (event) 
   event.currentTarget.disabled = true;
   alert.textContent = '';
   try {
-    await api('/api/v1/auth/logout', { method: 'POST', token: account.csrf_token });
+    const current = await accountState();
+    if (!current) throw new Error('account lookup failed');
+    await logout(current.csrf_token);
     location.assign('/login');
   } catch (error) {
     showError(error, alert);
@@ -112,7 +131,9 @@ document.querySelector('[data-logout]').addEventListener('click', async (event) 
 });
 
 try {
-  render(await api('/api/v1/account'));
+  const current = await accountState();
+  if (!current) throw new Error('account lookup failed');
+  render(current);
 } catch (error) {
   showError(error, alert);
 } finally {

@@ -1,4 +1,4 @@
-import { api, prepareForm, clearErrors, showError } from './api.js';
+import { api, accountState, refreshAccountState, prepareForm, clearErrors, showError } from './api.js';
 
 const alert = document.querySelector('[data-error]');
 const notice = document.querySelector('[data-notice]');
@@ -32,7 +32,15 @@ async function queue(cursor = null) {
   for (const application of payload.applications) {
     const item = document.createElement('li');
     const text = document.createElement('span');
-    text.textContent = `${application.minecraft_nickname} · ${application.status} · ${application.submitted_at}`;
+    const identity = document.createElement('span');
+    identity.textContent = `${application.minecraft_nickname} · `;
+    const status = document.createElement('span');
+    status.className = 'application-status';
+    status.dataset.status = application.status;
+    status.textContent = application.status;
+    const submitted = document.createElement('span');
+    submitted.textContent = ` · ${application.submitted_at}`;
+    text.append(identity, status, submitted);
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = `review ${application.minecraft_nickname}`;
@@ -67,6 +75,10 @@ async function review(id) {
     term.textContent = key.replaceAll('_', ' ');
     description.textContent = value;
     description.className = 'literal-text';
+    if (key === 'status') {
+      description.classList.add('application-status');
+      description.dataset.status = value;
+    }
     row.append(term, description);
     details.append(row);
   }
@@ -79,12 +91,27 @@ async function review(id) {
 }
 
 async function mutate(id, path, method, body) {
-  await api(path, { method, body, token: actor.csrf_token });
+  try {
+    await api(path, { method, body, token: actor.csrf_token });
+  } catch (error) {
+    if (error.code === 'csrf_token_invalid') {
+      try {
+        const current = await refreshAccountState();
+        if (current) {
+          actor = current;
+          if (!['moderator', 'administrator'].includes(actor.user.role)) panel.hidden = true;
+        }
+      } catch {
+        // keep orig mutation error if refresh fails.
+      }
+    }
+    throw error;
+  }
   // consume csrf on every successful admin change
   // refresh controls if permissions have changed
   card.hidden = true;
-  actor = await api('/api/v1/account');
-  if (!['moderator', 'administrator'].includes(actor.user.role)) {
+  actor = await refreshAccountState();
+  if (!actor || !['moderator', 'administrator'].includes(actor.user.role)) {
     panel.hidden = true;
     throw new Error('moderator or administrator access required');
   }
@@ -177,8 +204,8 @@ next.addEventListener('click', () => run(async () => { card.hidden = true; await
 document.querySelector('[data-first]').addEventListener('click', () => run(async () => { card.hidden = true; await queue(); }));
 
 await run(async () => {
-  actor = await api('/api/v1/account');
-  if (!['moderator', 'administrator'].includes(actor.user.role)) throw new Error('moderator or administrator access required');
+  actor = await accountState();
+  if (!actor || !['moderator', 'administrator'].includes(actor.user.role)) throw new Error('moderator or administrator access required');
   panel.hidden = false;
   await queue();
 });

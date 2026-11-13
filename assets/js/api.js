@@ -62,6 +62,40 @@ export async function api(path, { method = 'GET', body, token } = {}) {
   return payload;
 }
 
+let accountPromise;
+
+async function requestAccountState() {
+  const response = await fetch('/api/v1/account', {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+    redirect: 'error',
+    cache: 'no-store',
+  });
+  if (response.status === 401) return null;
+  if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) throw new Error('account lookup failed');
+  return response.json();
+}
+
+export function accountState() {
+  if (!accountPromise) accountPromise = requestAccountState().catch((error) => {
+    accountPromise = undefined;
+    throw error;
+  });
+  return accountPromise;
+}
+
+export function refreshAccountState() {
+  accountPromise = requestAccountState().catch((error) => {
+    accountPromise = undefined;
+    throw error;
+  });
+  return accountPromise;
+}
+
+export async function logout(token) {
+  await api('/api/v1/auth/logout', { method: 'POST', token });
+}
+
 // field errors use error.code, not html or error maps.
 export function prepareForm(form) {
   for (const control of form.querySelectorAll('input[name], select[name], textarea[name]')) {

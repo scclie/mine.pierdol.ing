@@ -74,8 +74,14 @@ jobs:
           test ! -e "$REQUEST"
           test ! -L "$REQUEST"
           trap 'rm -f -- "$LINK" "$REQUEST"' EXIT
-          rsync -a --delete --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r ./public/ "$REL/"
+          rsync -a --no-o --no-g --delete --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r ./public/ "$REL/"
           ln -s "releases/${RELEASE}" "$LINK"
+          RELEASE_OWNER="$(stat -c '%u:%g' "$REL")"
+          LINK_OWNER="$(stat -c '%u:%g' "$LINK")"
+          if [ "$RELEASE_OWNER" != "$LINK_OWNER" ]; then
+            echo "Refusing static promotion: release and public symlink ownership differ" >&2
+            exit 1
+          fi
           mv -Tf -- "$LINK" "$PUBLIC"
           # keep the current release plus five older releases by modification time.
           find /tank/sites/mine/releases -mindepth 1 -maxdepth 1 -type d ! -name "$RELEASE" -printf '%T@ %f\0' |

@@ -31,6 +31,8 @@
   text-decoration: none;
 }
 
+.primary-nav a[hidden] { display: none; }
+
 .primary-nav a:hover,
 .primary-nav a[aria-current="page"] {
   color: var(--nord8);
@@ -63,9 +65,15 @@
 .login-entry {
   padding-block: 0.2rem;
   font-size: 0.75rem;
-  margin-left: auto;
   text-decoration: none;
 }
+
+.header-auth { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-left: auto; }
+.header-account-link, .header-logout { display: inline-flex; align-items: center; gap: 0.4rem; }
+.minecraft-head { width: 2rem; height: 2rem; image-rendering: pixelated; }
+.header-logout { font: inherit; color: var(--nord8); background: transparent; border: 1px solid var(--nord8); padding: 0.2rem 0.5rem; cursor: pointer; }
+.header-logout:hover:not(:disabled), .header-logout:focus-visible { background: var(--nord8); color: var(--nord0); }
+.header-logout-error { color: var(--nord13); max-width: 26ch; overflow-wrap: anywhere; }
 
 .login-methods {
   margin-top: 2rem;
@@ -200,6 +208,12 @@ dd {
 .workflow [role="status"] { color: var(--nord14); }
 .workflow [aria-invalid="true"] { border-color: var(--nord13); }
 .literal-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.application-status { display: inline-block; border: 1px solid currentColor; padding-inline: 0.3rem; font-weight: 700; }
+.application-status[data-status="pending"] { color: var(--nord13); }
+.application-status[data-status="approved"] { color: var(--nord14); }
+.application-status[data-status="rejected_retryable"] { color: var(--nord12); }
+.application-status[data-status="rejected_final"] { color: var(--nord11); }
+.application-status[data-status="banned"] { color: var(--nord15); }
 .application-queue { list-style: none; margin: 0; padding: 0; }
 .application-queue li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--nord9); padding-block: 0.5rem; }
 .application-queue span { min-width: 0; overflow-wrap: anywhere; }
@@ -234,7 +248,7 @@ dd {
     justify-content: center;
   }
 
-  .login-entry {
+  .header-auth {
     align-self: center;
     margin-left: 0;
   }
