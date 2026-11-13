@@ -10,6 +10,9 @@
 </head>
 <body>
   <a class="skip-link" href="#content">skip to content</a>
+  <div class="ascii-background" aria-hidden="true" data-ascii-frames-src="$site.asset('ascii/glyph-glitch-text-frames.json').link()">
+    <pre data-ascii-frame></pre>
+  </div>
   <div class="shell">
     <header class="site-header">
       <nav class="primary-nav" aria-label="Main navigation">
@@ -35,5 +38,6 @@
     </footer>
   </div>
   <script type="module" src="$site.asset('js/header.js').link()"></script>
+  <script type="module" src="$site.asset('js/ascii-background.js').link()"></script>
 </body>
 </html>

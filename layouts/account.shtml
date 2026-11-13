@@ -7,7 +7,7 @@
     <p role="alert" data-error></p>
     <p role="status" data-notice></p>
     <div data-account hidden>
-      <p>signed in as <span data-display-name></span></p>
+      <p>signed in as <span data-discord-identity></span></p>
       <dl>
         <div><dt>state</dt><dd><span class="application-status" data-account-state></span></dd></div>
         <div data-nickname-row hidden><dt>nickname</dt><dd data-nickname></dd></div>
@@ -16,7 +16,7 @@
       <p data-password-setup hidden>password setup required</p>
       <div data-controls></div>
       <div class="workflow-actions">
-        <button type="button" data-logout>sign out</button>
+        <button class="account-logout" type="button" data-logout>[ sign out ]</button>
       </div>
     </div>
     <template data-application-form>

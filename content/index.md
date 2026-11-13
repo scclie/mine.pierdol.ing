@@ -21,4 +21,4 @@
     ],
 },
 ---
-just a private minecraft server built around wha the players want, with applications open to everyone
+yet another private minecraft server built around wha the players want, applications open to everyone

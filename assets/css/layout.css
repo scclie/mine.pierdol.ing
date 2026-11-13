@@ -1,8 +1,40 @@
+.ascii-background {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  color: var(--nord4);
+  opacity: 0.12;
+}
+
+.ascii-background pre {
+  flex: none;
+  width: max-content;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font: 10px/12px monospace;
+  font-variant-ligatures: none;
+  letter-spacing: calc(10px - 1ch);
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  transform: scale(var(--ascii-scale, 1));
+  transform-origin: center;
+}
+
 .shell {
+  position: relative;
+  z-index: 1;
   width: min(80vw, 60rem);
   margin: 3rem auto;
   padding: 1.25rem;
-  background: var(--nord1);
+  background: rgb(59 66 82 / 0.94);
   border: 2px solid var(--nord8);
   border-radius: 0;
 }
@@ -69,11 +101,10 @@
 }
 
 .header-auth { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-left: auto; }
-.header-account-link, .header-logout { display: inline-flex; align-items: center; gap: 0.4rem; }
+.header-account-link { display: inline-flex; align-items: center; gap: 0.4rem; }
 .minecraft-head { width: 2rem; height: 2rem; image-rendering: pixelated; }
-.header-logout { font: inherit; color: var(--nord8); background: transparent; border: 1px solid var(--nord8); padding: 0.2rem 0.5rem; cursor: pointer; }
-.header-logout:hover:not(:disabled), .header-logout:focus-visible { background: var(--nord8); color: var(--nord0); }
-.header-logout-error { color: var(--nord13); max-width: 26ch; overflow-wrap: anywhere; }
+.workflow button.account-logout { font: inherit; color: var(--nord8); background: transparent; border: 0; padding: 0; cursor: pointer; }
+.workflow button.account-logout:hover:not(:disabled), .workflow button.account-logout:focus-visible { color: var(--nord7); background: transparent; text-decoration: underline; }
 
 .login-methods {
   margin-top: 2rem;
@@ -165,6 +196,7 @@ dd {
 
 .skip-link {
   position: absolute;
+  z-index: 2;
   left: 1rem;
   top: -8rem;
   padding: 0.5rem;

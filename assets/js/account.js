@@ -17,7 +17,10 @@ function render(payload) {
   if (!payload) throw new Error('account lookup failed');
   account = payload;
   root.hidden = false;
-  document.querySelector('[data-display-name]').textContent = account.user.display_name;
+  const username = account.user.discord_username;
+  document.querySelector('[data-discord-identity]').textContent = username
+    ? `@${username} (${account.user.discord_id})`
+    : `discord user (${account.user.discord_id})`;
   const application = account.application;
   const state = document.querySelector('[data-account-state]');
   const status = application?.status || 'no application';

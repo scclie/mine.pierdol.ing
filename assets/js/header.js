@@ -1,4 +1,4 @@
-import { accountState, logout } from './api.js';
+import { accountState } from './api.js';
 
 const auth = document.querySelector('[data-header-auth]');
 const login = document.querySelector('[data-header-login]');
@@ -29,29 +29,8 @@ function renderAuthenticatedHeader(account) {
     link.prepend(avatar);
   }
 
-  const signOut = document.createElement('button');
-  signOut.type = 'button';
-  signOut.className = 'header-logout';
-  signOut.textContent = 'sign out';
-  const error = document.createElement('span');
-  error.className = 'header-logout-error';
-  error.setAttribute('role', 'alert');
-  error.setAttribute('aria-atomic', 'true');
-  signOut.addEventListener('click', async () => {
-    error.textContent = '';
-    signOut.disabled = true;
-    try {
-      const current = await accountState();
-      if (!current) throw new Error('account lookup failed');
-      await logout(current.csrf_token);
-      location.assign('/login');
-    } catch {
-      error.textContent = 'Sign out failed. Please try again.';
-      signOut.disabled = false;
-    }
-  });
   // Finish constructing the replacement before touching the guest controls.
-  auth.replaceChildren(link, signOut, error);
+  auth.replaceChildren(link);
 
   moderation.hidden = !showModeration;
 }

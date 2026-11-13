@@ -109,8 +109,9 @@ const Fixture = struct {
         const object = parsed.value.object;
         try std.testing.expectEqual(@as(usize, 4), object.count());
         const user = object.get("user").?.object;
-        try std.testing.expectEqual(@as(usize, 4), user.count());
+        try std.testing.expectEqual(@as(usize, 5), user.count());
         try std.testing.expectEqual(@as(i64, 1), user.get("id").?.integer);
+        try std.testing.expectEqualStrings("test-user", user.get("discord_username").?.string);
         try std.testing.expectEqualStrings("Test User", user.get("display_name").?.string);
         const app = object.get("application").?;
         if (app != .null) try std.testing.expectEqual(@as(usize, 4), app.object.count());

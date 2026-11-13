@@ -42,7 +42,7 @@ pub const ApplicationService = struct {
         defer std.crypto.utils.secureZero(u8, &csrf_hash);
         try self.repository.refreshCsrf(actor.user_id, &token_hash, &csrf_hash);
         const payload = .{
-            .user = .{ .id = actor.user_id, .discord_id = result.value(0, 1), .display_name = result.value(0, 2), .role = actor.role },
+            .user = .{ .id = actor.user_id, .discord_id = result.value(0, 1), .discord_username = result.value(0, 9), .display_name = result.value(0, 2), .role = actor.role },
             .application = if (status) |value| @as(?Application, .{
                 .minecraft_nickname = result.value(0, 3),
                 .client_type = client_type.?,

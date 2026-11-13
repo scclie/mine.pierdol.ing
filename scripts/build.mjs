@@ -34,7 +34,7 @@ try {
   const stagedBase = join(stage, 'layouts/templates/base.shtml');
   const template = await readFile(stagedBase, 'utf8');
   await writeFile(stagedBase, injectBuildCommit(template, buildCommitFrom(process.env)));
-  for (const directory of ['css', 'js']) {
+  for (const directory of ['css', 'js', 'ascii']) {
     await cp(join(root, 'assets', directory), join(stage, 'assets', directory), { recursive: true });
   }
   const result = spawnSync(zine, ['release'], { cwd: stage, stdio: 'inherit', env: { ...process.env, TMPDIR: stage, XDG_CACHE_HOME: join(stage, 'cache') } });

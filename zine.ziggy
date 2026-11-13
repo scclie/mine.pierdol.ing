@@ -10,5 +10,7 @@
         "css/theme.css",
         "css/layout.css",
         "js/api.js",
+        "js/ascii-background.js",
+        "ascii/glyph-glitch-text-frames.json",
     ],
 }),
