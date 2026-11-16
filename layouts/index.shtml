@@ -9,10 +9,10 @@
         <h3 :text="$loop.it.get('name')"></h3>
         <p :text="$loop.it.get('description')"></p>
         <dl>
-          <div><dt>ver</dt><dd :text="$loop.it.get('version')"></dd></div>
+          <div><dt>vers</dt><dd :text="$loop.it.get('version')"></dd></div>
           <div><dt>addr</dt><dd>not announced</dd></div>
           <div class="server-state" aria-live="polite" aria-atomic="true">
-            <dt>stats</dt>
+            <dt>stat</dt>
             <dd><span class="server-status" data-server-status>planned</span><br><span data-server-online>off / not launched</span></dd>
           </div>
         </dl>

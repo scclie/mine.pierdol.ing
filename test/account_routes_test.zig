@@ -149,6 +149,7 @@ fn configuration() !config.Config {
         .{ "DISCORD_CLIENT_SECRET", "test-client-secret" },
         .{ "DISCORD_REDIRECT_URI", "http://127.0.0.1:3000/api/v1/auth/discord/callback" },
         .{ "SESSION_SIGNING_KEY", "0123456789abcdef0123456789abcdef" },
+        .{ "GAME_AUTH_SERVER_CREDENTIALS", "sb:test-game-auth-secret" },
         .{ "ADMIN_DISCORD_IDS", "123456789012345678" },
         .{ "MODERATOR_DISCORD_IDS", "223456789012345678" },
         .{ "DEVELOPMENT_MODE", "true" },

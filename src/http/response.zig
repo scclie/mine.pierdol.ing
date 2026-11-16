@@ -11,6 +11,7 @@ pub const Response = struct {
     status: u16,
     body: []u8,
     headers: std.ArrayList(Header),
+    sensitive_body: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, status: u16, body: []const u8) !Response {
         return .{
@@ -27,7 +28,12 @@ pub const Response = struct {
             self.allocator.free(stored_header.value);
         }
         self.headers.deinit();
-        self.allocator.free(self.body);
+        if (self.sensitive_body) {
+            std.crypto.utils.secureZero(u8, self.body);
+            // rawFree avoids debug allocator poisoning between the explicit
+            // wipe and the backing allocator's release/recording boundary.
+            if (self.body.len != 0) self.allocator.rawFree(self.body, 0, @returnAddress());
+        } else self.allocator.free(self.body);
     }
 
     pub fn addHeader(self: *Response, name: []const u8, value: []const u8) !void {

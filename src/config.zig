@@ -9,6 +9,7 @@ pub const Config = struct {
     discord_client_secret: []u8,
     discord_redirect_uri: []u8,
     session_signing_key: []u8,
+    game_auth_credentials: []GameAuthCredential,
     administrator_discord_ids: std.AutoHashMap(u64, void),
     moderator_discord_ids: std.AutoHashMap(u64, void),
     development_mode: bool,
@@ -29,6 +30,8 @@ pub const Config = struct {
         const session_signing_key = try duplicateRequired(allocator, "SESSION_SIGNING_KEY", error.InvalidSessionSigningKey);
         errdefer wipeFree(allocator, session_signing_key);
         if (session_signing_key.len < 32) return error.InvalidSessionSigningKey;
+        const game_auth_credentials = try parseGameAuthCredentials(allocator, try duplicateRequired(allocator, "GAME_AUTH_SERVER_CREDENTIALS", error.InvalidGameAuthServerCredentials));
+        errdefer deinitGameAuthCredentials(allocator, game_auth_credentials);
 
         const public_url = parsePublicOrigin(public_origin) catch return error.InvalidPublicOrigin;
         const development_mode = environmentIs("DEVELOPMENT_MODE", "true");
@@ -56,6 +59,7 @@ pub const Config = struct {
             .discord_client_secret = discord_client_secret,
             .discord_redirect_uri = discord_redirect_uri,
             .session_signing_key = session_signing_key,
+            .game_auth_credentials = game_auth_credentials,
             .administrator_discord_ids = administrator_discord_ids,
             .moderator_discord_ids = moderator_discord_ids,
             .development_mode = development_mode,
@@ -70,10 +74,66 @@ pub const Config = struct {
         wipeFree(self.allocator, self.discord_client_secret);
         self.allocator.free(self.discord_redirect_uri);
         wipeFree(self.allocator, self.session_signing_key);
+        deinitGameAuthCredentials(self.allocator, self.game_auth_credentials);
         self.administrator_discord_ids.deinit();
         self.moderator_discord_ids.deinit();
     }
 };
+
+pub const GameAuthCredential = struct {
+    server_id: []u8,
+    secret: []u8,
+};
+
+pub fn deinitGameAuthCredentials(allocator: std.mem.Allocator, credentials: []GameAuthCredential) void {
+    for (credentials) |credential| {
+        allocator.free(credential.server_id);
+        wipeFree(allocator, credential.secret);
+    }
+    allocator.free(credentials);
+}
+
+// limit to 64 server scopes to match the admission table capacity.
+pub fn parseGameAuthCredentials(allocator: std.mem.Allocator, raw: []u8) ![]GameAuthCredential {
+    defer wipeFree(allocator, raw);
+    var credentials = std.ArrayList(GameAuthCredential).init(allocator);
+    errdefer {
+        for (credentials.items) |credential| {
+            allocator.free(credential.server_id);
+            wipeFree(allocator, credential.secret);
+        }
+        credentials.deinit();
+    }
+
+    var entries = std.mem.splitScalar(u8, raw, ',');
+    while (entries.next()) |entry| {
+        const separator = std.mem.indexOfScalar(u8, entry, ':') orelse return error.InvalidGameAuthServerCredentials;
+        if (separator == 0 or separator + 1 == entry.len or std.mem.indexOfScalarPos(u8, entry, separator + 1, ':') != null) return error.InvalidGameAuthServerCredentials;
+        const server_id = entry[0..separator];
+        const secret = entry[separator + 1 ..];
+        if (!asciiSafe(server_id) or server_id.len > 64 or !asciiSafe(secret) or secret.len > 128 or credentials.items.len >= 64) return error.InvalidGameAuthServerCredentials;
+        for (server_id) |byte| {
+            if (!std.ascii.isAlphanumeric(byte) and byte != '_' and byte != '-') return error.InvalidGameAuthServerCredentials;
+        }
+        for (credentials.items) |credential| {
+            if (std.mem.eql(u8, credential.server_id, server_id)) return error.DuplicateGameAuthServerId;
+            if (std.mem.eql(u8, credential.secret, secret)) return error.DuplicateGameAuthSecret;
+        }
+        const owned_server_id = try allocator.dupe(u8, server_id);
+        errdefer allocator.free(owned_server_id);
+        const owned_secret = try allocator.dupe(u8, secret);
+        errdefer wipeFree(allocator, owned_secret);
+        try credentials.append(.{ .server_id = owned_server_id, .secret = owned_secret });
+    }
+    if (credentials.items.len == 0) return error.InvalidGameAuthServerCredentials;
+    return credentials.toOwnedSlice();
+}
+
+fn asciiSafe(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |byte| if (byte < 0x21 or byte > 0x7e) return false;
+    return true;
+}
 
 fn environmentValue(name: [:0]const u8) ?[]const u8 {
     return std.posix.getenv(name);

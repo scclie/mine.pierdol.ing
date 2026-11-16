@@ -361,6 +361,10 @@ pub const ApplicationRepository = struct {
         var transaction = try self.pool.begin();
         errdefer transaction.rollback() catch {};
 
+        // use consistent lock order: user before application, credentials and identity
+        var owner = try transaction.query("SELECT id FROM users WHERE id=$1::bigint FOR UPDATE", &.{user_id_parameter});
+        owner.deinit();
+
         var credential_result = try transaction.query(
             "WITH eligible_application AS (SELECT user_id FROM applications WHERE user_id = $1 AND client_type = 'cracked' AND status = 'approved' FOR UPDATE), updated_credential AS (UPDATE password_credentials SET password_hash = $2, changed_at = now() FROM eligible_application WHERE password_credentials.user_id = eligible_application.user_id RETURNING password_credentials.user_id) SELECT EXISTS(SELECT 1 FROM updated_credential)",
             &.{ user_id_parameter, new_hash },

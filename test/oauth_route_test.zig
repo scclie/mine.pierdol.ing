@@ -25,6 +25,7 @@ fn setValidEnvironment() !void {
     try setEnvironment("DISCORD_CLIENT_SECRET", "test-client-secret");
     try setEnvironment("DISCORD_REDIRECT_URI", "http://127.0.0.1:3000/api/v1/auth/discord/callback");
     try setEnvironment("SESSION_SIGNING_KEY", valid_session_key);
+    try setEnvironment("GAME_AUTH_SERVER_CREDENTIALS", "sb:test-game-auth-secret");
     try setEnvironment("ADMIN_DISCORD_IDS", "");
     try setEnvironment("MODERATOR_DISCORD_IDS", "");
     try setEnvironment("DEVELOPMENT_MODE", "true");

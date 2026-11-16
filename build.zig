@@ -52,11 +52,37 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const game_auth_repository_module = b.createModule(.{
+        .root_source_file = b.path("src/db/game_auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    game_auth_repository_module.addImport("db_pool", pool_module);
+    game_auth_repository_module.addImport("domain", domain_module);
+    const game_auth_service_module = b.createModule(.{
+        .root_source_file = b.path("src/services/game_auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    game_auth_service_module.addImport("db_pool", pool_module);
+    game_auth_service_module.addImport("domain", domain_module);
+    game_auth_service_module.addImport("game_auth_repository", game_auth_repository_module);
+    const game_auth_routes_module = b.createModule(.{
+        .root_source_file = b.path("src/routes/game_auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    game_auth_routes_module.addImport("config", config_module);
+    game_auth_routes_module.addImport("db_pool", pool_module);
+    game_auth_routes_module.addImport("game_auth_service", game_auth_service_module);
+    game_auth_routes_module.addImport("http_server", http_server_module);
     const runtime_module = b.createModule(.{
         .root_source_file = b.path("src/runtime.zig"),
         .target = target,
         .optimize = optimize,
     });
+    runtime_module.addImport("game_auth_routes", game_auth_routes_module);
+    runtime_module.addImport("http_server", http_server_module);
     const health_module = b.createModule(.{
         .root_source_file = b.path("src/routes/health.zig"),
         .target = target,
@@ -135,6 +161,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("http_server", http_server_module);
     exe.root_module.addImport("discord", discord_module);
     exe.root_module.addImport("auth_routes", auth_routes_module);
+    exe.root_module.addImport("game_auth_routes", game_auth_routes_module);
     exe.root_module.addImport("health", health_module);
     exe.root_module.addImport("runtime", runtime_module);
     exe.linkLibC();
@@ -278,6 +305,75 @@ pub fn build(b: *std.Build) void {
     admin_route_tests.linkLibC();
     admin_route_tests.linkSystemLibrary("pq");
     const run_admin_route_tests = b.addRunArtifact(admin_route_tests);
+
+    const game_auth_route_tests = b.addTest(.{
+        .root_source_file = b.path("test/game_auth_routes_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    game_auth_route_tests.root_module.addImport("db_pool", pool_module);
+    game_auth_route_tests.root_module.addImport("domain", domain_module);
+    game_auth_route_tests.root_module.addImport("migrations", migrations_module);
+    game_auth_route_tests.root_module.addImport("postgres", postgres_module);
+    game_auth_route_tests.root_module.addImport("game_auth_repository", game_auth_repository_module);
+    game_auth_route_tests.root_module.addImport("game_auth_service", game_auth_service_module);
+    game_auth_route_tests.root_module.addImport("applications", applications_module);
+    game_auth_route_tests.root_module.addImport("game_auth_routes", game_auth_routes_module);
+    game_auth_route_tests.root_module.addImport("http_server", http_server_module);
+    game_auth_route_tests.root_module.addImport("config", config_module);
+    game_auth_route_tests.linkLibC();
+    game_auth_route_tests.linkSystemLibrary("pq");
+    const integration_check = b.step("check-game-auth-integration", "Compile game-auth integration sources without running them");
+    integration_check.dependOn(&game_auth_route_tests.step);
+    integration_check.dependOn(&exe.step);
+
+    const disposable_postgres = b.addSystemCommand(&.{ "python3", "test/support/game_auth_postgres.py", "--postgres-bin", b.option([]const u8, "game-auth-postgres-bin", "Directory containing already-provisioned PostgreSQL binaries") orelse "" });
+    disposable_postgres.addArtifactArg(game_auth_route_tests);
+    disposable_postgres.has_side_effects = true;
+    b.step("test-game-auth-postgres", "Explicitly run real game-auth fixtures in a new disposable loopback PostgreSQL cluster").dependOn(&disposable_postgres.step);
+
+    const contract_repository = b.createModule(.{
+        .root_source_file = b.path("test/support/game_auth_contract_repository.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    contract_repository.addImport("game_auth_repository", game_auth_repository_module);
+    const contract_service = b.createModule(.{
+        .root_source_file = b.path("src/services/game_auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    contract_service.addImport("db_pool", pool_module);
+    contract_service.addImport("domain", domain_module);
+    contract_service.addImport("game_auth_repository", contract_repository);
+    const contract_tests = b.addTest(.{
+        .root_source_file = b.path("test/game_auth_offline_test.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .filters = &.{ "game_auth_contract_test", "game-auth boundary" },
+    });
+    contract_tests.root_module.addImport("game_auth_service", contract_service);
+    contract_tests.root_module.addImport("contract_repository", contract_repository);
+    contract_tests.root_module.addImport("game_auth_repository", game_auth_repository_module);
+    contract_tests.linkLibC();
+    const offline_step = b.step("test-game-auth", "Run only offline game-auth fixtures");
+    offline_step.dependOn(&b.addRunArtifact(contract_tests).step);
+    const boundary_routes = b.createModule(.{ .root_source_file = b.path("src/routes/game_auth.zig"), .target = target, .optimize = optimize });
+    boundary_routes.addImport("config", config_module);
+    boundary_routes.addImport("db_pool", pool_module);
+    boundary_routes.addImport("game_auth_service", contract_service);
+    boundary_routes.addImport("http_server", http_server_module);
+    contract_tests.root_module.addImport("game_auth_routes", boundary_routes);
+    contract_tests.root_module.addImport("config", config_module);
+    contract_tests.root_module.addImport("http_server", http_server_module);
+    const listener_tests = b.addTest(.{ .root_source_file = b.path("test/game_auth_boundary_test.zig"), .target = target, .optimize = optimize, .filters = &.{"game-auth listener"} });
+    listener_tests.root_module.addImport("game_auth_routes", boundary_routes);
+    listener_tests.root_module.addImport("game_auth_service", contract_service);
+    listener_tests.root_module.addImport("config", config_module);
+    listener_tests.root_module.addImport("http_server", http_server_module);
+    listener_tests.linkLibC();
+    b.step("test-game-auth-listener", "Explicitly run disposable loopback transport fixtures; no database").dependOn(&b.addRunArtifact(listener_tests).step);
 
     const pool_tests = b.addTest(.{
         .root_source_file = b.path("src/db/pool.zig"),

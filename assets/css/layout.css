@@ -137,7 +137,7 @@ dl {
 
 dl > div {
   display: grid;
-  grid-template-columns: 16ch minmax(0, 1fr);
+  grid-template-columns: 6ch minmax(0, 1fr);
   gap: 0.25rem 1rem;
 }
 
