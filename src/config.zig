@@ -30,7 +30,10 @@ pub const Config = struct {
         const session_signing_key = try duplicateRequired(allocator, "SESSION_SIGNING_KEY", error.InvalidSessionSigningKey);
         errdefer wipeFree(allocator, session_signing_key);
         if (session_signing_key.len < 32) return error.InvalidSessionSigningKey;
-        const game_auth_credentials = try parseGameAuthCredentials(allocator, try duplicateRequired(allocator, "GAME_AUTH_SERVER_CREDENTIALS", error.InvalidGameAuthServerCredentials));
+        const game_auth_credentials: []GameAuthCredential = if (environmentValue("GAME_AUTH_SERVER_CREDENTIALS")) |value|
+            try parseGameAuthCredentials(allocator, try allocator.dupe(u8, value))
+        else
+            &.{};
         errdefer deinitGameAuthCredentials(allocator, game_auth_credentials);
 
         const public_url = parsePublicOrigin(public_origin) catch return error.InvalidPublicOrigin;
@@ -86,6 +89,7 @@ pub const GameAuthCredential = struct {
 };
 
 pub fn deinitGameAuthCredentials(allocator: std.mem.Allocator, credentials: []GameAuthCredential) void {
+    if (credentials.len == 0) return;
     for (credentials) |credential| {
         allocator.free(credential.server_id);
         wipeFree(allocator, credential.secret);

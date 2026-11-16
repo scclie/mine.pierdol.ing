@@ -250,9 +250,13 @@ pub const Server = struct {
         try admission.take(admission.context, server_id);
     }
 
+    fn handlesInternal(self: *const Server, target: []const u8) bool {
+        return self.internal_auth != null and isInternal(target);
+    }
+
     pub fn authenticateHead(self: *Server, request: *Request) bool {
         request.authenticated_server_id = null;
-        if (!isInternal(request.target)) return true;
+        if (!self.handlesInternal(request.target)) return true;
         const auth = self.internal_auth orelse return false;
         request.authenticated_server_id = auth.check(auth.context, request.authorization);
         return request.authenticated_server_id != null;
@@ -282,7 +286,7 @@ pub const Server = struct {
 
     fn dispatchAdmitted(self: *Server, input: Request, admitted: bool) !response.Response {
         var request = input;
-        const internal = isInternal(request.target);
+        const internal = self.handlesInternal(request.target);
         if (!self.authenticateHead(&request)) return internalResponse(self.allocator, 401);
         if (internal and !admitted) self.admitInternal(request.authenticated_server_id.?) catch |err| return internalResponse(self.allocator, if (err == error.RateLimited) 429 else 500);
         self.dispatch_mutex.lock();
@@ -427,7 +431,7 @@ pub const Server = struct {
                 }
             }
             if (authorization_count > 1) authorization = null;
-            if (isInternal(wire_request.head.target)) {
+            if (self.handlesInternal(wire_request.head.target)) {
                 const input = Request{ .method = wire_request.head.method, .target = wire_request.head.target, .content_type = content_type, .content_length = wire_request.head.content_length, .authorization = authorization, .unsupported_framing = wire_request.head.transfer_encoding != .none or wire_request.head.transfer_compression != .identity or wire_request.head.expect != null };
                 var exchange = try self.internalExchange(input, &io, read_buffer[range.end..range.buffered]);
                 defer exchange.result.deinit();

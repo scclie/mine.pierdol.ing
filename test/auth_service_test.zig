@@ -34,19 +34,29 @@ fn setValidEnvironment() !void {
     try setEnvironment("DEVELOPMENT_MODE", "true");
 }
 
-test "auth_service_test Config.load rejects missing game-auth credentials" {
+test "auth_service_test Config.load disables game-auth when credentials are absent" {
     try setValidEnvironment();
     defer setValidEnvironment() catch unreachable;
     try std.testing.expectEqual(@as(c_int, 0), c.unsetenv("GAME_AUTH_SERVER_CREDENTIALS"));
-    try std.testing.expectError(error.InvalidGameAuthServerCredentials, config.Config.load(std.testing.allocator));
+    var loaded = try config.Config.load(std.testing.allocator);
+    defer loaded.deinit();
+    try std.testing.expectEqual(@as(usize, 0), loaded.game_auth_credentials.len);
 }
 
-test "auth_service_test Config.load rejects empty and malformed game-auth credentials" {
+test "auth_service_test Config.load rejects empty malformed and duplicate game-auth credentials" {
     defer setValidEnvironment() catch unreachable;
-    for ([_][:0]const u8{ "", "missing-separator", "server:", ":secret", "server:has space" }) |value| {
+    for ([_]struct { value: [:0]const u8, expected: anyerror }{
+        .{ .value = "", .expected = error.InvalidGameAuthServerCredentials },
+        .{ .value = "missing-separator", .expected = error.InvalidGameAuthServerCredentials },
+        .{ .value = "server:", .expected = error.InvalidGameAuthServerCredentials },
+        .{ .value = ":secret", .expected = error.InvalidGameAuthServerCredentials },
+        .{ .value = "server:has space", .expected = error.InvalidGameAuthServerCredentials },
+        .{ .value = "one:first,one:second", .expected = error.DuplicateGameAuthServerId },
+        .{ .value = "one:same,two:same", .expected = error.DuplicateGameAuthSecret },
+    }) |case| {
         try setValidEnvironment();
-        try setEnvironment("GAME_AUTH_SERVER_CREDENTIALS", value);
-        try std.testing.expectError(error.InvalidGameAuthServerCredentials, config.Config.load(std.testing.allocator));
+        try setEnvironment("GAME_AUTH_SERVER_CREDENTIALS", case.value);
+        try std.testing.expectError(case.expected, config.Config.load(std.testing.allocator));
     }
 }
 

@@ -400,6 +400,7 @@ pub fn build(b: *std.Build) void {
         .filters = b.args orelse &.{},
     });
     runtime_tests.root_module.addImport("runtime", runtime_module);
+    runtime_tests.root_module.addImport("http_server", http_server_module);
     const run_runtime_tests = b.addRunArtifact(runtime_tests);
 
     const health_route_tests = b.addTest(.{

@@ -33,12 +33,14 @@ pub fn main() !void {
     var discord_service = discord.DiscordService.initProduction(std.heap.page_allocator, &pool, &configuration);
     var auth_router = try auth_routes.Router.init(std.heap.page_allocator, &discord_service, &configuration);
     defer auth_router.deinit();
-    var game_auth_router = game_auth_routes.Router.init(std.heap.page_allocator, &pool, &configuration);
-    defer game_auth_router.deinit();
     var server = http.Server.init(std.heap.page_allocator);
     defer server.deinit();
     try health.register(&server);
     try auth_routes.register(&server, &auth_router);
-    try runtime.registerGameAuth(&server, &game_auth_router);
-    try server.serve(configuration.http_listen_address);
+    if (configuration.game_auth_credentials.len > 0) {
+        var game_auth_router = game_auth_routes.Router.init(std.heap.page_allocator, &pool, &configuration);
+        defer game_auth_router.deinit();
+        try runtime.registerGameAuth(&server, &game_auth_router);
+        try server.serve(configuration.http_listen_address);
+    } else try server.serve(configuration.http_listen_address);
 }
