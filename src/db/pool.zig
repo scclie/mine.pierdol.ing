@@ -88,7 +88,11 @@ pub const Pool = struct {
         errdefer c.PQclear(result);
 
         const status = c.PQresultStatus(result);
-        if (status != c.PGRES_COMMAND_OK and status != c.PGRES_TUPLES_OK) return error.QueryFailed;
+        if (status != c.PGRES_COMMAND_OK and status != c.PGRES_TUPLES_OK) {
+            const sqlstate = c.PQresultErrorField(result, c.PG_DIAG_SQLSTATE);
+            if (sqlstate != null and std.mem.eql(u8, std.mem.span(sqlstate), "40P01")) return error.DeadlockDetected;
+            return error.QueryFailed;
+        }
 
         return .{ .result = result };
     }

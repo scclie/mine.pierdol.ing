@@ -117,10 +117,23 @@ pub const ApplicationRepository = struct {
 
     /// handle everything in one transaction
     pub fn mutateAccount(self: *ApplicationRepository, actor: types.Actor, mutation: Mutation, input: ?AccountInput, password_hash: ?[]const u8, proof: SessionProof) !void {
+        // legacy lock order may cause deadlocks.
+        // retry only confirmed deadlocks after a full rollback.
+        // recheck session, permissions and nickname under fresh locks.
+        for (0..3) |attempt| {
+            var transaction = try self.pool.begin();
+            mutateAccountTransaction(&transaction, actor, mutation, input, password_hash, proof) catch |err| {
+                try transaction.rollback();
+                if (err == error.DeadlockDetected and attempt < 2) continue;
+                return err;
+            };
+            return;
+        }
+    }
+
+    fn mutateAccountTransaction(transaction: *db.Transaction, actor: types.Actor, mutation: Mutation, input: ?AccountInput, password_hash: ?[]const u8, proof: SessionProof) !void {
         var buffer: [20]u8 = undefined;
         const id = try std.fmt.bufPrint(&buffer, "{d}", .{actor.user_id});
-        var transaction = try self.pool.begin();
-        errdefer transaction.rollback() catch {};
 
         // all account/admin mutations lock users before sessions.
         var owner = try transaction.query("SELECT id FROM users WHERE id = $1 FOR UPDATE", &.{id});

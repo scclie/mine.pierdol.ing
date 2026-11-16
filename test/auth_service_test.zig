@@ -34,6 +34,22 @@ fn setValidEnvironment() !void {
     try setEnvironment("DEVELOPMENT_MODE", "true");
 }
 
+test "auth_service_test Config.load rejects missing game-auth credentials" {
+    try setValidEnvironment();
+    defer setValidEnvironment() catch unreachable;
+    try std.testing.expectEqual(@as(c_int, 0), c.unsetenv("GAME_AUTH_SERVER_CREDENTIALS"));
+    try std.testing.expectError(error.InvalidGameAuthServerCredentials, config.Config.load(std.testing.allocator));
+}
+
+test "auth_service_test Config.load rejects empty and malformed game-auth credentials" {
+    defer setValidEnvironment() catch unreachable;
+    for ([_][:0]const u8{ "", "missing-separator", "server:", ":secret", "server:has space" }) |value| {
+        try setValidEnvironment();
+        try setEnvironment("GAME_AUTH_SERVER_CREDENTIALS", value);
+        try std.testing.expectError(error.InvalidGameAuthServerCredentials, config.Config.load(std.testing.allocator));
+    }
+}
+
 test "auth_service_test Config.load rejects an empty session signing key" {
     try setValidEnvironment();
     try setEnvironment("SESSION_SIGNING_KEY", "");

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { localRun, freshPort, zigArgs } from '../scripts/test-local.mjs';
 
 test('release HTTP health, authentication boundary, and static root', async () => {
@@ -15,10 +17,13 @@ test('release HTTP health, authentication boundary, and static root', async () =
       MODE: 'oauth', PORT: String(oauthPort), CALLBACK: callback,
     }, 'oauth.log');
     await wait(async () => (await fetch(`${oauthOrigin}/__ready`)).status === 200, oauth);
+    // always use a fresh synthetic secret, never caller game-server credentials.
+    const gameAuthSecret = randomBytes(32).toString('hex');
     const api = await start(`${directory}/zig-out/bin/release-api`, [], {
       DATABASE_URL: database, HTTP_LISTEN_ADDRESS: `127.0.0.1:${apiPort}`, PUBLIC_ORIGIN: origin,
       DISCORD_CLIENT_ID: 'local', DISCORD_CLIENT_SECRET: 'local-only', DISCORD_REDIRECT_URI: callback,
       SESSION_SIGNING_KEY: 'local-verification-key-not-a-real-secret', DEVELOPMENT_MODE: 'true',
+      GAME_AUTH_SERVER_CREDENTIALS: `release-smoke:${gameAuthSecret}`,
       ADMIN_DISCORD_IDS: '3001', MODERATOR_DISCORD_IDS: '2001', TASK12_OAUTH_ORIGIN: oauthOrigin,
     }, 'api.log');
     await wait(async () => {
@@ -40,5 +45,7 @@ test('release HTTP health, authentication boundary, and static root', async () =
     const root = await fetch(origin, { redirect: 'error' });
     assert.equal(root.status, 200, 'static root status');
     await root.body?.cancel();
+    const apiLog = await readFile(`${directory}/api.log`, 'utf8');
+    assert.equal(apiLog.includes(gameAuthSecret), false, 'synthetic game-auth secret must not appear in API logs');
   });
 });

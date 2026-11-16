@@ -621,6 +621,35 @@ test "account_routes_test retry rechecks nickname after waiting for the applicat
     try std.testing.expectEqual(@as(u16, 200), retry.status);
 }
 
+test "account_routes_test deadlock retries are bounded and other lock errors are not retried" {
+    // catch unbounded retries, retrying NOWAIT failures, and committing partial attempts
+    for ([_][]const u8{ "40P01", "55P03" }, [_][]const u8{ "3", "1" }) |sqlstate, attempts| {
+        var f: Fixture = undefined;
+        try f.init();
+        defer f.deinit();
+        const token = try f.csrf();
+        // sequences survive rollback, so count actual transaction attempts
+        try f.sql("CREATE SEQUENCE account_attempts");
+        const function = try std.fmt.allocPrint(std.testing.allocator, "CREATE FUNCTION fail_account_attempt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('account_attempts'); RAISE EXCEPTION 'injected transaction failure' USING ERRCODE='{s}'; END $$", .{sqlstate});
+        defer std.testing.allocator.free(function);
+        try f.sql(function);
+        try f.sql("CREATE TRIGGER fail_account_attempt BEFORE INSERT ON applications FOR EACH ROW EXECUTE FUNCTION fail_account_attempt()");
+        var failed = try f.mutate(.POST, "/api/v1/account/application", licensed, &token);
+        defer failed.deinit();
+        try expectError(&failed, 500, "internal_error");
+        try f.expectSql("SELECT last_value::text FROM account_attempts", attempts);
+        try f.expectSql("SELECT count(*) FROM applications", "0");
+        try f.expectSql("SELECT count(*) FROM game_identities", "0");
+        try f.expectSql("SELECT count(*) FROM password_credentials", "0");
+        try f.audits("0");
+        try f.sql("DROP TRIGGER fail_account_attempt ON applications");
+        var retry = try f.mutate(.POST, "/api/v1/account/application", licensed, &token);
+        defer retry.deinit();
+        try std.testing.expectEqual(@as(u16, 201), retry.status);
+        try f.audits("1");
+    }
+}
+
 test "account_routes_test trimmed UTF-8 byte boundaries and nickname bounds are enforced" {
     var f: Fixture = undefined;
     try f.init();
