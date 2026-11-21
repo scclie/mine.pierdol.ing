@@ -72,9 +72,11 @@ test "domain_application_test retry submissions preserve exact display nickname 
 
 test "domain_application_test nicknames reject invalid length and non Minecraft characters" {
     const invalid = [_][]const u8{
-        "",       "a",      "ab",   "abcdefghijklmnopq", "a-b",
-        "éab",   " aab",   "aab ", "a.b",               "a/b",
-        "a\nb",   "a\x00b", "a\tb", "a\\b",              "соси жопу",
+        "",       "a",    "ab",   "abcdefghijklmnopq", "a-b",
+        "éab",
+        " aab",   "aab ", "a.b",  "a/b",               "a\nb",
+        "a\x00b", "a\tb", "a\\b",
+        "соси жопу",
         "a\xffb",
     };
     for (invalid) |raw| {
@@ -214,6 +216,7 @@ test "domain_application_test audit actions serialize as the closed event vocabu
         .user_discord_id_changed,
         .user_client_type_changed,
         .password_changed,
+        .licensed_mojang_uuid_changed,
     };
     const expected = [_][]const u8{
         "\"application_created\"",
@@ -227,6 +230,7 @@ test "domain_application_test audit actions serialize as the closed event vocabu
         "\"user_discord_id_changed\"",
         "\"user_client_type_changed\"",
         "\"password_changed\"",
+        "\"licensed_mojang_uuid_changed\"",
     };
     try std.testing.expectEqual(actions.len, @typeInfo(audit.AuditAction).Enum.fields.len);
     for (actions, expected) |action, want| {
@@ -234,4 +238,188 @@ test "domain_application_test audit actions serialize as the closed event vocabu
         defer std.testing.allocator.free(json);
         try std.testing.expectEqualStrings(want, json);
     }
+}
+
+test "licensed UUID parsers normalize spelling without imposing a version" {
+    const U = domain.mojang_uuid.Uuid;
+    const expected = "4af7fe6c-cb9e-4012-bef8-adf078f34694";
+    const id = try U.parseProvider("4AF7FE6CCB9E4012BEF8ADF078F34694");
+    try std.testing.expectEqualStrings(expected, &id.format());
+    try std.testing.expect(id.eql(try U.parseProvider(expected)));
+    try std.testing.expect(id.eql(try U.parseAdmin(" \t\r\n4AF7FE6C-CB9E-4012-BEF8-ADF078F34694\t ")));
+    const non_v4 = try U.parseAdmin("00000000-0000-1000-0000-000000000001");
+    try std.testing.expectEqualStrings("00000000-0000-1000-0000-000000000001", &non_v4.format());
+    try std.testing.expect(!id.eql(non_v4));
+    try expectLicensedError(error.InvalidLicensedMojangUuid, U.parseAdmin("4af7fe6ccb9e4012bef8adf078f34694"));
+    for ([_][]const u8{
+        "",                                     "00000000-0000-0000-0000-000000000000",    "00000000000000000000000000000000",
+        "4af7fe6c-cb9e-4012-bef8-adf078f3469",  "4af7fe6c-cb9e-4012-bef8-adf078f346940",   "4af7fe6c_cb9e-4012-bef8-adf078f34694",
+        "4af7fe6c-cb9e-4012-bef8-adf078f3469g", "4af7fe6c-cb9e-4012-bef8-adf078f3469\x00", "4af7fe6c-cb9e-4012-bef8-adf078f3469 ",
+        "4af7fe6cc b9e4012bef8adf078f34694",    "4af7fe6ccb9e4012bef8adf078f3469g",        "4af7fe6ccb9e4012bef8adf078f3469\x00",
+        "4af7fe6ccb9e4012bef8adf078f346940",
+    }) |raw| {
+        try expectLicensedError(error.InvalidLicensedMojangUuid, U.parseAdmin(raw));
+        try expectLicensedError(error.InvalidLicensedMojangUuid, U.parseProvider(raw));
+    }
+    for ([_][]const u8{ " 4af7fe6c-cb9e-4012-bef8-adf078f34694", "4af7fe6c-cb9e-4012-bef8-adf078f34694\n", " 4af7fe6ccb9e4012bef8adf078f34694" }) |raw| {
+        try expectLicensedError(error.InvalidLicensedMojangUuid, U.parseProvider(raw));
+    }
+}
+
+fn licensedSnapshot(client: types.ClientType, status: types.ApplicationStatus) !domain.licensed_admission.Snapshot {
+    return .{ .revision = 1, .identity_id = 7, .uuid = try domain.mojang_uuid.Uuid.parseProvider("4af7fe6ccb9e4012bef8adf078f34694"), .application = .{
+        .nickname = try nickname.validateNickname("Example_Name"),
+        .client_type = client,
+        .status = status,
+    } };
+}
+
+// use Uuid.format as the domain api, avoid formatting uuid payloads in expectError diagnostics
+fn expectLicensedError(expected: anyerror, actual: anytype) !void {
+    _ = actual catch |err| {
+        try std.testing.expectEqual(expected, err);
+        return;
+    };
+    return error.TestExpectedError;
+}
+
+test "licensed policy writer table requires lookup only for licensed admission edges" {
+    const a = domain.licensed_admission;
+    const n = try nickname.validateNickname("Example_Name");
+    const cases = [_]struct { current: ?a.Snapshot, intent: a.Intent, lookup: bool, clear: bool = false }{
+        .{ .current = null, .intent = .{ .operation = .create, .nickname = n, .client_type = .licensed }, .lookup = true },
+        .{ .current = null, .intent = .{ .operation = .create, .nickname = n, .client_type = .cracked }, .lookup = false, .clear = true },
+        .{ .current = try licensedSnapshot(.licensed, .rejected_retryable), .intent = .{ .operation = .resubmit }, .lookup = true },
+        .{ .current = try licensedSnapshot(.licensed, .rejected_retryable), .intent = .{ .operation = .resubmit, .client_type = .licensed }, .lookup = true },
+        .{ .current = try licensedSnapshot(.cracked, .rejected_retryable), .intent = .{ .operation = .resubmit, .client_type = .licensed }, .lookup = true },
+        .{ .current = try licensedSnapshot(.licensed, .rejected_retryable), .intent = .{ .operation = .resubmit, .client_type = .cracked }, .lookup = false, .clear = true },
+        .{ .current = try licensedSnapshot(.cracked, .rejected_retryable), .intent = .{ .operation = .resubmit }, .lookup = false, .clear = true },
+        .{ .current = try licensedSnapshot(.licensed, .pending), .intent = .{ .operation = .approve, .status = .approved }, .lookup = true },
+        .{ .current = try licensedSnapshot(.cracked, .pending), .intent = .{ .operation = .approve, .status = .approved }, .lookup = false, .clear = true },
+        .{ .current = try licensedSnapshot(.licensed, .pending), .intent = .{ .operation = .reject, .status = .rejected_retryable }, .lookup = false },
+        .{ .current = try licensedSnapshot(.licensed, .pending), .intent = .{ .operation = .reject, .status = .rejected_final }, .lookup = false },
+        .{ .current = try licensedSnapshot(.licensed, .approved), .intent = .{ .operation = .edit }, .lookup = false },
+        .{ .current = try licensedSnapshot(.licensed, .approved), .intent = .{ .operation = .edit, .nickname = n, .client_type = .licensed }, .lookup = false },
+        .{ .current = try licensedSnapshot(.licensed, .approved), .intent = .{ .operation = .edit, .nickname = try nickname.validateNickname("example_name") }, .lookup = true },
+        .{ .current = try licensedSnapshot(.licensed, .approved), .intent = .{ .operation = .edit, .nickname = try nickname.validateNickname("Other_Name") }, .lookup = true },
+        .{ .current = try licensedSnapshot(.cracked, .approved), .intent = .{ .operation = .edit, .client_type = .licensed }, .lookup = true },
+        .{ .current = try licensedSnapshot(.licensed, .approved), .intent = .{ .operation = .edit, .client_type = .cracked }, .lookup = false, .clear = true },
+        .{ .current = try licensedSnapshot(.licensed, .approved), .intent = .{ .operation = .edit, .status = .banned }, .lookup = false },
+        .{ .current = try licensedSnapshot(.licensed, .banned), .intent = .{ .operation = .edit, .status = .approved }, .lookup = true },
+        .{ .current = try licensedSnapshot(.licensed, .banned), .intent = .{ .operation = .edit, .status = .pending }, .lookup = false },
+    };
+    for (cases) |case| {
+        const d = try a.evaluate(case.current, case.intent);
+        try std.testing.expectEqual(case.lookup, d.lookup_required);
+        try std.testing.expectEqual(case.clear, d.clear);
+        if (case.intent.operation == .create or case.intent.operation == .resubmit) try std.testing.expectEqual(types.ApplicationStatus.pending, d.final.status);
+    }
+    var unresolved = try licensedSnapshot(.licensed, .approved);
+    unresolved.uuid = null;
+    try std.testing.expect((try a.evaluate(unresolved, .{ .operation = .resolve })).lookup_required);
+}
+
+test "licensed policy rejects invalid edges missing identity and unsafe manual intents" {
+    const a = domain.licensed_admission;
+    const licensed = try licensedSnapshot(.licensed, .pending);
+    const cracked = try licensedSnapshot(.cracked, .pending);
+    const id = licensed.uuid.?;
+    try expectLicensedError(error.InvalidLicensedMojangUuid, a.evaluate(licensed, .{ .operation = .edit, .uuid = .clear }));
+    try expectLicensedError(error.InvalidLicensedMojangUuid, a.evaluate(cracked, .{ .operation = .edit, .uuid = .{ .set = id }, .confirmed_override = true, .has_reason = true }));
+    for ([_]a.Intent{
+        .{ .operation = .edit, .uuid = .{ .set = id } },
+        .{ .operation = .edit, .uuid = .{ .set = id }, .confirmed_override = true },
+        .{ .operation = .edit, .uuid = .{ .set = id }, .has_reason = true },
+    }) |intent| try expectLicensedError(error.ManualOverrideRequired, a.evaluate(licensed, intent));
+    const manual = try a.evaluate(licensed, .{ .operation = .edit, .uuid = .{ .set = id }, .confirmed_override = true, .has_reason = true });
+    try std.testing.expect(manual.manual.?.eql(id));
+    try std.testing.expect(!manual.lookup_required);
+    var missing = licensed;
+    missing.identity_id = null;
+    for ([_]a.Operation{ .resubmit, .edit, .approve, .reject, .resolve }) |operation| {
+        try expectLicensedError(error.GameIdentityRequired, a.evaluate(missing, .{ .operation = operation }));
+        try expectLicensedError(error.ApplicationRequired, a.evaluate(null, .{ .operation = operation }));
+    }
+    missing = licensed;
+    missing.application = null;
+    try expectLicensedError(error.ApplicationRequired, a.evaluate(missing, .{ .operation = .edit }));
+    try expectLicensedError(error.InvalidTransition, a.evaluate(try licensedSnapshot(.licensed, .approved), .{ .operation = .approve, .status = .approved }));
+    try expectLicensedError(error.InvalidTransition, a.evaluate(licensed, .{ .operation = .resubmit }));
+    try expectLicensedError(error.InvalidTransition, a.evaluate(try licensedSnapshot(.licensed, .rejected_final), .{ .operation = .edit, .status = .approved }));
+    try expectLicensedError(error.InvalidTransition, a.evaluate(licensed, .{ .operation = .reject, .status = .approved }));
+    try expectLicensedError(error.InvalidTransition, a.evaluate(licensed, .{ .operation = .create }));
+    try expectLicensedError(error.InvalidTransition, a.evaluate(licensed, .{ .operation = .resolve }));
+    var unresolved_cracked = cracked;
+    unresolved_cracked.uuid = null;
+    try expectLicensedError(error.InvalidTransition, a.evaluate(unresolved_cracked, .{ .operation = .resolve }));
+    try expectLicensedError(error.NicknameImmutable, a.evaluate(try licensedSnapshot(.licensed, .rejected_retryable), .{ .operation = .resubmit, .nickname = try nickname.validateNickname("example_name") }));
+}
+
+test "licensed binding validates names protects old binding and allows only explicit manual replacement" {
+    const a = domain.licensed_admission;
+    const U = domain.mojang_uuid.Uuid;
+    const state = try licensedSnapshot(.licensed, .pending);
+    const id = state.uuid.?;
+    const other = try U.parseAdmin("00000000-0000-1000-0000-000000000001");
+    const n = state.application.?.nickname;
+    var observation = a.Observation{ .requested = n, .returned = try nickname.validateNickname("example_name"), .uuid = id, .observed_ns = 0 };
+    const decision = try a.evaluate(state, .{ .operation = .approve });
+    try expectLicensedError(error.MojangObservationRequired, a.binding(state, decision, null));
+    try std.testing.expect((try a.binding(state, decision, observation)).?.eql(id));
+    observation.uuid = other;
+    try expectLicensedError(error.LicensedMojangUuidMismatch, a.binding(state, decision, observation));
+    const manual = try a.evaluate(state, .{ .operation = .approve, .uuid = .{ .set = other }, .confirmed_override = true, .has_reason = true });
+    try std.testing.expect((try a.binding(state, manual, observation)).?.eql(other));
+    observation.uuid = id;
+    try expectLicensedError(error.LicensedMojangUuidMismatch, a.binding(state, manual, observation));
+    observation.returned = try nickname.validateNickname("Other_Name");
+    try expectLicensedError(error.IdentityChanged, a.binding(state, decision, observation));
+    observation.requested = observation.returned;
+    try expectLicensedError(error.IdentityChanged, a.binding(state, decision, observation));
+    observation.requested = try nickname.validateNickname("example_name");
+    observation.returned = observation.requested;
+    try expectLicensedError(error.IdentityChanged, a.binding(state, decision, observation));
+    const rejection = try a.evaluate(state, .{ .operation = .reject, .status = .rejected_final });
+    try std.testing.expect((try a.binding(state, rejection, null)).?.eql(id));
+    const ban = try a.evaluate(state, .{ .operation = .edit, .status = .banned });
+    try std.testing.expect((try a.binding(state, ban, null)).?.eql(id));
+    try expectLicensedError(error.IdentityChanged, a.binding(state, rejection, .{ .requested = n, .returned = try nickname.validateNickname("Other_Name"), .uuid = id, .observed_ns = 0 }));
+    var unbound = state;
+    unbound.uuid = null;
+    observation = .{ .requested = n, .returned = n, .uuid = id, .observed_ns = 0 };
+    try std.testing.expect((try a.binding(unbound, decision, observation)).?.eql(id));
+    const cleared = try a.evaluate(state, .{ .operation = .edit, .client_type = .cracked });
+    try std.testing.expect((try a.binding(state, cleared, null)) == null);
+    const reaffirmed = try a.evaluate(state, .{ .operation = .edit, .uuid = .{ .set = id }, .confirmed_override = true, .has_reason = true });
+    try std.testing.expect((try a.binding(state, reaffirmed, null)).?.eql(id));
+    try std.testing.expect(reaffirmed.manual != null);
+    const prepared = a.Prepared{ .expected = state, .intent = .{ .operation = .approve }, .observation = observation };
+    try std.testing.expectEqual(@as(u64, 1), prepared.expected.?.revision);
+    const legacy = a.Prepared{ .expected = null, .intent = .{ .operation = .create }, .observation = null };
+    try std.testing.expect(legacy.expected == null);
+}
+
+fn serializeLicensedUuidAllocationTest(allocator: std.mem.Allocator) !void {
+    const json = try audit.serializeUuid(allocator, null, .manual_admin);
+    defer allocator.free(json);
+}
+
+test "licensed UUID audit emits exact null and canonical projections without payload fields" {
+    const canonical = "4af7fe6c-cb9e-4012-bef8-adf078f34694";
+    for ([_]struct { uuid: ?[]const u8, source: audit.UuidSource, expected: []const u8 }{
+        .{ .uuid = null, .source = .mojang_lookup, .expected = "{\"licensed_mojang_uuid\":null,\"source\":\"mojang_lookup\"}" },
+        .{ .uuid = canonical, .source = .mojang_lookup, .expected = "{\"licensed_mojang_uuid\":\"4af7fe6c-cb9e-4012-bef8-adf078f34694\",\"source\":\"mojang_lookup\"}" },
+        .{ .uuid = canonical, .source = .cracked_clear, .expected = "{\"licensed_mojang_uuid\":\"4af7fe6c-cb9e-4012-bef8-adf078f34694\",\"source\":\"cracked_clear\"}" },
+        .{ .uuid = null, .source = .cracked_clear, .expected = "{\"licensed_mojang_uuid\":null,\"source\":\"cracked_clear\"}" },
+        .{ .uuid = canonical, .source = .manual_admin, .expected = "{\"licensed_mojang_uuid\":\"4af7fe6c-cb9e-4012-bef8-adf078f34694\",\"source\":\"manual_admin\"}" },
+        .{ .uuid = canonical, .source = .premium_session, .expected = "{\"licensed_mojang_uuid\":\"4af7fe6c-cb9e-4012-bef8-adf078f34694\",\"source\":\"premium_session\"}" },
+    }) |case| {
+        const json = try audit.serializeUuid(std.testing.allocator, case.uuid, case.source);
+        defer std.testing.allocator.free(json);
+        try std.testing.expectEqualStrings(case.expected, json);
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqual(@as(usize, 2), parsed.value.object.count());
+    }
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, serializeLicensedUuidAllocationTest, .{});
 }

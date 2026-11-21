@@ -10,11 +10,174 @@ const http = @import("http_server");
 const discord = @import("discord");
 const auth_routes = @import("auth_routes");
 const domain = @import("domain");
+const mojang = @import("mojang");
+const fake_mojang = @import("fake_mojang");
 
 const cracked = "{\"minecraft_nickname\":\" Example_Name \",\"client_type\":\"cracked\",\"about_me\":\" I build rail systems. \",\"discovery_source\":\" Friend \",\"password\":\"blue-harbor-falcon-2026\"}";
 const licensed = "{\"minecraft_nickname\":\"Licensed_Name\",\"client_type\":\"licensed\",\"about_me\":\"I build.\",\"discovery_source\":\"Friend\"}";
 const retry_licensed = "{\"minecraft_nickname\":\" Example_Name \",\"client_type\":\"licensed\",\"about_me\":\"I build.\",\"discovery_source\":\"Friend\"}";
 const replacement = "{\"password\":\"blue-harbor-falcon-2027\"}";
+
+test "account_routes_test licensed create binds before commit" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.create(licensed);
+    try f.expectSql("SELECT licensed_mojang_uuid IS NOT NULL FROM game_identities WHERE user_id=1", "t");
+    try std.testing.expectEqual(@as(usize, 1), f.mojang.calls);
+}
+
+test "account_routes_test licensed lookup failures preserve command state and CSRF" {
+    for ([_]bool{ false, true }) |resubmit| {
+        var f: Fixture = undefined;
+        try f.init();
+        defer f.deinit();
+        if (resubmit) {
+            try f.create(licensed);
+            try f.sql("UPDATE applications SET status='rejected_retryable',decision_reason='Retry'");
+        }
+        const token = try f.csrf();
+        const before = try f.state();
+        defer std.testing.allocator.free(before);
+        for ([_]anyerror{ error.MinecraftProfileNotFound, error.MinecraftProfileLookupUnavailable, error.MinecraftProfileLookupInvalid }, [_]u16{ 422, 503, 502 }, [_][]const u8{ "minecraft_profile_not_found", "minecraft_profile_lookup_unavailable", "minecraft_profile_lookup_invalid" }) |failure, status, code| {
+            f.mojang.failure = failure;
+            var result = try f.mutate(if (resubmit) .PATCH else .POST, "/api/v1/account/application", licensed, &token);
+            defer result.deinit();
+            try expectError(&result, status, code);
+            try std.testing.expectEqualStrings("no-store", result.header("Cache-Control").?);
+            const after = try f.state();
+            defer std.testing.allocator.free(after);
+            try std.testing.expectEqualStrings(before, after);
+        }
+        f.mojang.failure = null;
+        var retry = try f.mutate(if (resubmit) .PATCH else .POST, "/api/v1/account/application", licensed, &token);
+        defer retry.deinit();
+        try std.testing.expectEqual(@as(u16, if (resubmit) 200 else 201), retry.status);
+        try f.expectSql("SELECT licensed_mojang_uuid::text FROM game_identities", "4af7fe6c-cb9e-4012-bef8-adf078f34694");
+    }
+}
+
+test "account_routes_test licensed preparation stale competing changes survive without command effects" {
+    for ([_][]const u8{
+        "UPDATE applications SET minecraft_nickname='Changed_Name',minecraft_nickname_normalized='changed_name'",
+        "UPDATE applications SET client_type='cracked'",
+        "UPDATE applications SET status='approved',decision_reason=NULL",
+        "UPDATE applications SET client_type='cracked'; UPDATE applications SET client_type='licensed'",
+        "UPDATE applications SET status='approved',decision_reason=NULL; UPDATE applications SET status='rejected_retryable',decision_reason='Retry'",
+        "UPDATE game_identities SET licensed_mojang_uuid='7af7fe6c-cb9e-4012-bef8-adf078f34694'",
+        "DELETE FROM game_identities",
+        "INSERT INTO password_credentials(user_id,password_hash) VALUES (1,'competing-credential')",
+    }) |sql| {
+        var f: Fixture = undefined;
+        try f.init();
+        defer f.deinit();
+        try f.create(licensed);
+        try f.sql("UPDATE applications SET status='rejected_retryable',decision_reason='Retry'");
+        const token = try f.csrf();
+        const Hook = struct {
+            fixture: *Fixture,
+            sql: []const u8,
+            after: ?[]u8 = null,
+            fn run(ctx: *anyopaque) !void {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                const Pool = @TypeOf(self.fixture.database.pool);
+                var competing = try Pool.open(std.testing.allocator, self.fixture.database.database_url);
+                defer competing.close();
+                var commands = std.mem.splitScalar(u8, self.sql, ';');
+                while (commands.next()) |command| {
+                    var changed = try competing.query(command, &.{});
+                    changed.deinit();
+                }
+                self.after = try self.fixture.state();
+            }
+        };
+        var hook = Hook{ .fixture = &f, .sql = sql };
+        defer if (hook.after) |value| std.testing.allocator.free(value);
+        f.mojang.before_return = Hook.run;
+        f.mojang.hook_context = &hook;
+        var result = try f.mutate(.PATCH, "/api/v1/account/application", licensed, &token);
+        defer result.deinit();
+        try expectError(&result, 409, "identity_changed");
+        const after = try f.state();
+        defer std.testing.allocator.free(after);
+        try std.testing.expectEqualStrings(hook.after.?, after);
+    }
+}
+
+test "account_routes_test licensed self-service UUID input and duplicate fields rejected before lookup" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const token = try f.csrf();
+    for ([_][]const u8{ "licensed_mojang_uuid", "resolve_licensed_mojang_uuid", "confirmed_override", "expected_revision", "uuid", "confirm_uuid_override", "identity_revision" }) |field| {
+        const body = try std.fmt.allocPrint(std.testing.allocator, "{{\"{s}\":null,\"minecraft_nickname\":\"Licensed_Name\",\"client_type\":\"licensed\",\"about_me\":\"Build\",\"discovery_source\":\"Friend\"}}", .{field});
+        defer std.testing.allocator.free(body);
+        var result = try f.mutate(.POST, "/api/v1/account/application", body, &token);
+        defer result.deinit();
+        try expectError(&result, 422, "invalid_patch_field");
+    }
+    var duplicate = try f.mutate(.POST, "/api/v1/account/application", "{\"client_type\":\"cracked\",\"client_type\":\"licensed\"}", &token);
+    defer duplicate.deinit();
+    try expectError(&duplicate, 400, "invalid_json");
+    try std.testing.expectEqual(@as(usize, 0), f.mojang.calls);
+    try f.expectSql("SELECT count(*) FROM applications", "0");
+}
+
+test "account_routes_test licensed locked boundary rejects expired and future evidence without consuming CSRF" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const token = try f.csrf();
+    const service = &f.router.account_router.auth_service;
+    const repository = &f.router.account_router.application_service.repository;
+    const snapshot = try repository.readAdmissionSnapshot(1);
+    const name = try domain.nickname.validateNickname("Licensed_Name");
+    const input = @import("applications").AccountInput{ .nickname = name, .client_type = .licensed, .about_me = "Build", .discovery_source = "Friend", .password_hash = null };
+    const Hash = struct {
+        fn parameter(value: []const u8) [66]u8 {
+            var digest: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(value, &digest, .{});
+            return "\\x".* ++ std.fmt.bytesToHex(digest, .lower);
+        }
+    };
+    const proof = @import("applications").SessionProof{ .token_hash = Hash.parameter(&f.issued.session_token), .csrf_hash = Hash.parameter(&token), .next_csrf_hash = Hash.parameter("committed-success-only") };
+    var prepared = domain.licensed_admission.Prepared{ .expected = snapshot, .intent = .{ .operation = .create, .nickname = name, .client_type = .licensed }, .observation = .{ .requested = name, .returned = name, .uuid = f.mojang.uuid.?, .observed_ns = 0 } };
+    f.mojang.now_ns = 11 * std.time.ns_per_s;
+    const before = try f.state();
+    defer std.testing.allocator.free(before);
+    for ([_]u64{ 0, 12 * std.time.ns_per_s }) |observed| {
+        prepared.observation.?.observed_ns = observed;
+        try std.testing.expectError(error.IdentityChanged, repository.mutateAccount(.{ .user_id = 1, .role = .player }, .create, input, null, proof, service, prepared, &f.resolver.clock));
+        const after = try f.state();
+        defer std.testing.allocator.free(after);
+        try std.testing.expectEqualStrings(before, after);
+    }
+    prepared.observation.?.observed_ns = std.time.ns_per_s;
+    try repository.mutateAccount(.{ .user_id = 1, .role = .player }, .create, input, null, proof, service, prepared, &f.resolver.clock);
+    try f.expectSql("SELECT licensed_mojang_uuid::text FROM game_identities", "4af7fe6c-cb9e-4012-bef8-adf078f34694");
+    try std.testing.expectEqual(@as(usize, 0), f.mojang.calls);
+}
+
+test "account_routes_test licensed resubmit mismatch and missing identity preserve state" {
+    for ([_]bool{ false, true }) |missing| {
+        var f: Fixture = undefined;
+        try f.init();
+        defer f.deinit();
+        try f.create(licensed);
+        try f.sql("UPDATE applications SET status='rejected_retryable',decision_reason='Retry'");
+        if (missing) try f.sql("DELETE FROM game_identities");
+        f.mojang.uuid = try domain.mojang_uuid.Uuid.parseAdmin("7af7fe6c-cb9e-4012-bef8-adf078f34694");
+        const token = try f.csrf();
+        const before = try f.state();
+        defer std.testing.allocator.free(before);
+        var result = try f.mutate(.PATCH, "/api/v1/account/application", licensed, &token);
+        defer result.deinit();
+        try expectError(&result, if (missing) 500 else 409, if (missing) "internal_error" else "licensed_mojang_uuid_mismatch");
+        const after = try f.state();
+        defer std.testing.allocator.free(after);
+        try std.testing.expectEqualStrings(before, after);
+    }
+}
 
 const Fixture = struct {
     database: postgres.TestDatabase,
@@ -25,6 +188,8 @@ const Fixture = struct {
     issued: auth.IssuedSession,
     cookie: []u8,
     context: u8 = 0,
+    mojang: fake_mojang.Fake,
+    resolver: mojang.Resolver,
 
     fn init(self: *Fixture) !void {
         self.database = try postgres.TestDatabase.create(std.testing.allocator, std.posix.getenv("TEST_DATABASE_URL") orelse return error.MissingTestDatabaseUrl);
@@ -38,7 +203,9 @@ const Fixture = struct {
             .exchange = unusedExchange,
             .identity = unusedIdentity,
         });
-        self.router = try auth_routes.Router.init(std.testing.allocator, &self.provider, &self.loaded);
+        self.mojang = .{ .uuid = try domain.mojang_uuid.Uuid.parseAdmin("4af7fe6c-cb9e-4012-bef8-adf078f34694") };
+        self.resolver = self.mojang.resolver();
+        self.router = try auth_routes.Router.init(std.testing.allocator, &self.provider, &self.loaded, &self.resolver);
         errdefer self.router.deinit();
         self.server = http.Server.init(std.testing.allocator);
         errdefer self.server.deinit();
@@ -62,6 +229,13 @@ const Fixture = struct {
     fn sql(self: *Fixture, query: []const u8) !void {
         var result = try self.database.pool.query(query, &.{});
         result.deinit();
+    }
+
+    fn state(self: *Fixture) ![]u8 {
+        // Equality fingerprint avoids exposing even synthetic credential/session values.
+        var result = try self.database.pool.query("SELECT md5(jsonb_build_array((SELECT jsonb_agg(to_jsonb(u) ORDER BY id) FROM users u),(SELECT jsonb_agg(to_jsonb(a) ORDER BY user_id) FROM applications a),(SELECT jsonb_agg(to_jsonb(g) ORDER BY user_id) FROM game_identities g),(SELECT jsonb_agg(to_jsonb(p) ORDER BY user_id) FROM password_credentials p),(SELECT jsonb_agg(to_jsonb(s) ORDER BY id) FROM web_sessions s),(SELECT jsonb_agg(to_jsonb(l) ORDER BY id) FROM audit_log l),(SELECT jsonb_agg(to_jsonb(c)) FROM game_auth_whitelist_state c))::text)", &.{});
+        defer result.deinit();
+        return std.testing.allocator.dupe(u8, result.value(0, 0));
     }
 
     fn expectSql(self: *Fixture, query: []const u8, expected: []const u8) !void {
@@ -122,8 +296,8 @@ const Fixture = struct {
     }
 
     fn audits(self: *Fixture, count: []const u8) !void {
-        try self.expectSql("SELECT count(*) FROM audit_log", count);
-        try self.expectSql("SELECT count(*) FROM audit_log WHERE actor_user_id IS DISTINCT FROM 1 OR subject_user_id <> 1 OR old_value IS NOT NULL OR new_value IS NOT NULL OR reason IS NOT NULL", "0");
+        try self.expectSql("SELECT count(*) FROM audit_log WHERE action <> 'licensed_mojang_uuid_changed'", count);
+        try self.expectSql("SELECT count(*) FROM audit_log WHERE action <> 'licensed_mojang_uuid_changed' AND (actor_user_id IS DISTINCT FROM 1 OR subject_user_id <> 1 OR old_value IS NOT NULL OR new_value IS NOT NULL OR reason IS NOT NULL)", "0");
     }
 };
 
@@ -296,7 +470,9 @@ test "account_routes_test unauthenticated application creation requires server-s
         .exchange = unusedExchange,
         .identity = unusedIdentity,
     });
-    var router = try auth_routes.Router.init(std.testing.allocator, &provider, &loaded);
+    var fake: fake_mojang.Fake = .{};
+    const resolver = fake.resolver();
+    var router = try auth_routes.Router.init(std.testing.allocator, &provider, &loaded, &resolver);
     defer router.deinit();
     var server = http.Server.init(std.testing.allocator);
     defer server.deinit();
@@ -377,11 +553,16 @@ test "account_routes_test cracked create retry and password changes persist once
     try f.expectSql("SELECT minecraft_nickname || ':' || client_type || ':' || about_me FROM applications", "Example_Name:licensed:I build.");
     try f.expectSql("SELECT (decision_reason IS NULL AND decided_at IS NULL AND decided_by_user_id IS NULL AND submitted_at > now() - INTERVAL '1 minute')::text FROM applications", "true");
     try f.expectSql("SELECT count(*) FROM password_credentials", "0");
+    try f.expectSql("SELECT licensed_mojang_uuid::text FROM game_identities", "4af7fe6c-cb9e-4012-bef8-adf078f34694");
+    try std.testing.expectEqual(@as(usize, 1), f.mojang.calls);
     try f.sql("UPDATE applications SET status = 'rejected_retryable', decision_reason = 'Try cracked'");
     const cracked_token = try f.csrf();
     var re_cracked = try f.mutate(.PATCH, "/api/v1/account/application", cracked, &cracked_token);
     defer re_cracked.deinit();
     try std.testing.expectEqual(@as(u16, 200), re_cracked.status);
+    try f.expectSql("SELECT licensed_mojang_uuid IS NULL FROM game_identities", "t");
+    try f.expectSql("SELECT count(*) FROM audit_log WHERE action='licensed_mojang_uuid_changed'", "2");
+    try std.testing.expectEqual(@as(usize, 1), f.mojang.calls);
     try f.audits("3");
     try f.sql("UPDATE applications SET status = 'approved', decision_reason = NULL");
     try f.actions(false, false, true);
@@ -545,6 +726,7 @@ test "account_routes_test retry nickname rename rejects without changing applica
         var rejected = try f.mutate(.PATCH, "/api/v1/account/application", body, &token);
         defer rejected.deinit();
         try expectError(&rejected, 409, "nickname_immutable");
+        try std.testing.expectEqual(@as(usize, 0), f.mojang.calls);
         try f.expectSql(snapshot, before.value(0, 0));
     }
     // the very same token remains usable; harmless trim is not a rename.
@@ -598,7 +780,7 @@ test "account_routes_test retry rechecks nickname after waiting for the applicat
     for (0..5000) |_| {
         var refreshed = try transaction.query("SELECT pg_stat_clear_snapshot()", &.{});
         refreshed.deinit();
-        var activity = try transaction.query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE 'SELECT status, client_type, minecraft_nickname%')::text", &.{});
+        var activity = try transaction.query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE 'SELECT user_id FROM applications%')::text", &.{});
         waiting = std.mem.eql(u8, activity.value(0, 0), "true");
         activity.deinit();
         if (waiting or worker.done.load(.acquire)) break;

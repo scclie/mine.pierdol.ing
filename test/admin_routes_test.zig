@@ -1,4 +1,6 @@
 const std = @import("std");
+const fake_mojang = @import("fake_mojang");
+const mojang = @import("mojang");
 const c = @cImport({
     @cInclude("stdlib.h");
 });
@@ -21,6 +23,8 @@ const Fixture = struct {
     issued: auth.IssuedSession,
     cookie: []u8,
     context: u8 = 0,
+    mojang: fake_mojang.Fake,
+    resolver: mojang.Resolver,
 
     fn init(f: *Fixture) !void {
         f.database = try postgres.TestDatabase.create(std.testing.allocator, std.posix.getenv("TEST_DATABASE_URL") orelse return error.MissingTestDatabaseUrl);
@@ -40,7 +44,9 @@ const Fixture = struct {
         }) |pair| try std.testing.expectEqual(@as(c_int, 0), c.setenv(pair[0], pair[1], 1));
         f.loaded = try config.Config.load(std.testing.allocator);
         f.provider = discord.DiscordService.init(std.testing.allocator, &f.database.pool, &f.loaded, .{ .authorization_endpoint = "http://unused", .context = &f.context, .exchange = unusedExchange, .identity = unusedIdentity });
-        f.router = try routes.Router.init(std.testing.allocator, &f.provider, &f.loaded);
+        f.mojang = .{ .uuid = try domain.mojang_uuid.Uuid.parseAdmin("4af7fe6c-cb9e-4012-bef8-adf078f34694") };
+        f.resolver = f.mojang.resolver();
+        f.router = try routes.Router.init(std.testing.allocator, &f.provider, &f.loaded, &f.resolver);
         f.server = http.Server.init(std.testing.allocator);
         try routes.register(&f.server, &f.router);
         try f.sql("INSERT INTO users (discord_id, discord_username, discord_global_name, discord_avatar_hash) VALUES ('123456789012345678','Admin',NULL,NULL), ('423456789012345678','Subject','Old Name','old-avatar'), ('523456789012345678','Other',NULL,NULL)");
@@ -64,6 +70,11 @@ const Fixture = struct {
     fn sql(f: *Fixture, query: []const u8) !void {
         var r = try f.database.pool.query(query, &.{});
         r.deinit();
+    }
+    fn state(f: *Fixture) ![]u8 {
+        var r = try f.database.pool.query("SELECT md5(jsonb_build_array((SELECT jsonb_agg(to_jsonb(u) ORDER BY id) FROM users u),(SELECT jsonb_agg(to_jsonb(a) ORDER BY user_id) FROM applications a),(SELECT jsonb_agg(to_jsonb(g) ORDER BY user_id) FROM game_identities g),(SELECT jsonb_agg(to_jsonb(p) ORDER BY user_id) FROM password_credentials p),(SELECT jsonb_agg(to_jsonb(s) ORDER BY id) FROM web_sessions s),(SELECT jsonb_agg(to_jsonb(l) ORDER BY id) FROM audit_log l),(SELECT jsonb_agg(to_jsonb(c)) FROM game_auth_whitelist_state c))::text)", &.{});
+        defer r.deinit();
+        return std.testing.allocator.dupe(u8, r.value(0, 0));
     }
     fn expectSql(f: *Fixture, query: []const u8, expected: []const u8) !void {
         var r = try f.database.pool.query(query, &.{});
@@ -113,6 +124,205 @@ fn expectError(r: *const http.response.Response, status: u16, code: []const u8) 
     try std.testing.expectEqualStrings(code, p.value.object.get("error").?.object.get("code").?.string);
     try std.testing.expect(r.header("X-Request-ID") != null);
     try noSecrets(r.body);
+}
+
+test "admin_routes_test incident repair binds without toggles and card exposes UUID revision" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.sql("UPDATE applications SET minecraft_nickname='paper_sacculos',minecraft_nickname_normalized='paper_sacculos',status='approved' WHERE user_id=2");
+    try f.sql("CREATE TEMP TABLE repair_before AS SELECT identity_id,authentication_generation FROM game_identities WHERE user_id=2");
+    try f.sql("CREATE TEMP TABLE repair_cursor AS SELECT version FROM game_auth_whitelist_state");
+    var card = try f.get("/api/v1/admin/users/2");
+    defer card.deinit();
+    const p = try parse(card.body);
+    defer p.deinit();
+    try std.testing.expect(p.value.object.get("application").?.object.get("licensed_mojang_uuid") != null);
+    try std.testing.expect(p.value.object.get("application").?.object.get("licensed_mojang_uuid").? == .null);
+    try std.testing.expect(p.value.object.get("application").?.object.get("identity_revision") != null);
+    try std.testing.expect(p.value.object.get("application").?.object.get("identity_revision").? == .string);
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"resolve_licensed_mojang_uuid\":true}", 204, null);
+    try f.expectSql("SELECT licensed_mojang_uuid::text FROM game_identities WHERE user_id=2", "4af7fe6c-cb9e-4012-bef8-adf078f34694");
+    try f.expectSql("SELECT status::text FROM applications WHERE user_id=2", "approved");
+    try f.expectSql("SELECT count(*) FROM audit_log WHERE action='user_client_type_changed'", "0");
+    try f.expectSql("SELECT count(*) FROM password_credentials", "0");
+    try f.expectSql("SELECT g.identity_id=b.identity_id AND g.authentication_generation>b.authentication_generation FROM game_identities g,repair_before b WHERE g.user_id=2", "t");
+    try f.expectSql("SELECT c.version>b.version FROM game_auth_whitelist_state c,repair_cursor b", "t");
+    try f.expectSql("SELECT count(*) FROM audit_log WHERE action='licensed_mojang_uuid_changed' AND old_value->>'licensed_mojang_uuid' IS NULL AND new_value->>'licensed_mojang_uuid'='4af7fe6c-cb9e-4012-bef8-adf078f34694'", "1");
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"resolve_licensed_mojang_uuid\":true}", 409, "licensed_mojang_uuid_already_resolved");
+}
+
+test "admin_routes_test manual UUID requires confirmation reason administrator and audits uniqueness" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const uuid = "4af7fe6c-cb9e-4012-bef8-adf078f34694";
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"licensed_mojang_uuid\":\"" ++ uuid ++ "\",\"reason\":\"Incident\"}", 422, "uuid_override_confirmation_required");
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"licensed_mojang_uuid\":\"" ++ uuid ++ "\",\"confirm_uuid_override\":true}", 422, "reason_required");
+    const body = "{\"licensed_mojang_uuid\":\"" ++ uuid ++ "\",\"confirm_uuid_override\":true,\"reason\":\"Incident\"}";
+    try f.sql("UPDATE users SET discord_id='223456789012345678' WHERE id=1");
+    try f.change(.PATCH, "/api/v1/admin/users/2", body, 403, "insufficient_role");
+    try f.sql("UPDATE users SET discord_id='123456789012345678' WHERE id=1");
+    f.mojang.failure = error.MinecraftProfileLookupUnavailable;
+    try f.change(.PATCH, "/api/v1/admin/users/2", body, 204, null);
+    try f.sql("CREATE TEMP TABLE manual_before AS SELECT application_revision,version FROM users,game_auth_whitelist_state WHERE id=2");
+    try f.change(.PATCH, "/api/v1/admin/users/2", body, 204, null);
+    try f.expectSql("SELECT u.application_revision=b.application_revision+1 AND c.version=b.version FROM users u,game_auth_whitelist_state c,manual_before b WHERE u.id=2", "t");
+    try f.expectSql("SELECT count(*) FROM audit_log WHERE action='licensed_mojang_uuid_changed' AND reason='Incident' AND new_value->>'source'='manual_admin'", "2");
+    try f.change(.PATCH, "/api/v1/admin/users/3", body, 409, "licensed_mojang_uuid_in_use");
+    try std.testing.expectEqual(@as(usize, 0), f.mojang.calls);
+}
+
+test "admin_routes_test licensed decisions resolve bound approval unban and cracked clear" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.change(.POST, "/api/v1/admin/applications/2/approve", "{}", 204, null);
+    try f.expectSql("SELECT licensed_mojang_uuid IS NOT NULL FROM game_identities WHERE user_id=2", "t");
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"status\":\"banned\",\"reason\":\"No\"}", 204, null);
+    f.mojang.uuid = try domain.mojang_uuid.Uuid.parseAdmin("7af7fe6c-cb9e-4012-bef8-adf078f34694");
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"status\":\"approved\"}", 409, "licensed_mojang_uuid_mismatch");
+    f.mojang.uuid = try domain.mojang_uuid.Uuid.parseAdmin("4af7fe6c-cb9e-4012-bef8-adf078f34694");
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"status\":\"approved\"}", 204, null);
+    f.mojang.failure = error.MinecraftProfileLookupUnavailable;
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"client_type\":\"cracked\"}", 204, null);
+    try f.expectSql("SELECT licensed_mojang_uuid IS NULL FROM game_identities WHERE user_id=2", "t");
+    try std.testing.expectEqual(@as(usize, 3), f.mojang.calls);
+}
+
+test "admin_routes_test failed lookup preserves full state and original CSRF" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const token = try f.csrf();
+    const before = try f.state();
+    defer std.testing.allocator.free(before);
+    for ([_]anyerror{ error.MinecraftProfileNotFound, error.MinecraftProfileLookupUnavailable, error.MinecraftProfileLookupInvalid }, [_]u16{ 422, 503, 502 }, [_][]const u8{ "minecraft_profile_not_found", "minecraft_profile_lookup_unavailable", "minecraft_profile_lookup_invalid" }) |failure, status, code| {
+        f.mojang.failure = failure;
+        var r = try f.mutate(.POST, "/api/v1/admin/applications/2/approve", "{}", &token);
+        defer r.deinit();
+        try expectError(&r, status, code);
+        try std.testing.expectEqualStrings("no-store", r.header("Cache-Control").?);
+        const after = try f.state();
+        defer std.testing.allocator.free(after);
+        try std.testing.expectEqualStrings(before, after);
+    }
+    f.mojang.failure = null;
+    var retry = try f.mutate(.POST, "/api/v1/admin/applications/2/approve", "{}", &token);
+    defer retry.deinit();
+    try std.testing.expectEqual(@as(u16, 204), retry.status);
+}
+
+test "admin_routes_test UUID validation repair boundaries and combined final state" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const cases = [_]struct { body: []const u8, code: []const u8, status: u16 = 422 }{
+        .{ .body = "{\"licensed_mojang_uuid\":\"\"}", .code = "invalid_licensed_mojang_uuid" },
+        .{ .body = "{\"licensed_mojang_uuid\":\"00000000-0000-0000-0000-000000000000\"}", .code = "invalid_licensed_mojang_uuid" },
+        .{ .body = "{\"licensed_mojang_uuid\":null}", .code = "licensed_mojang_uuid_required" },
+        .{ .body = "{\"resolve_licensed_mojang_uuid\":true,\"status\":\"approved\"}", .code = "invalid_uuid_operation" },
+        .{ .body = "{\"resolve_licensed_mojang_uuid\":true,\"resolve_licensed_mojang_uuid\":true}", .code = "invalid_json", .status = 400 },
+        .{ .body = "{\"resolve_licensed_mojang_uuid\":true,\"identity_revision\":\"+1\"}", .code = "invalid_identity_revision" },
+        .{ .body = "{\"resolve_licensed_mojang_uuid\":true,\"identity_revision\":\"9223372036854775808\"}", .code = "invalid_identity_revision" },
+        .{ .body = "{\"resolve_licensed_mojang_uuid\":true,\"identity_revision\":\"0\"}", .code = "identity_changed", .status = 409 },
+    };
+    for (cases) |case| try f.change(.PATCH, "/api/v1/admin/users/2", case.body, case.status, case.code);
+    try std.testing.expectEqual(@as(usize, 0), f.mojang.calls);
+    try f.sql("UPDATE applications SET client_type='cracked' WHERE user_id=2");
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"resolve_licensed_mojang_uuid\":true}", 422, "licensed_mojang_uuid_not_applicable");
+    try f.sql("INSERT INTO password_credentials(user_id,password_hash) VALUES (2,'stale-secret')");
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"client_type\":\"licensed\",\"minecraft_nickname\":\"Final_Name\",\"status\":\"approved\"}", 204, null);
+    try f.expectSql("SELECT minecraft_nickname || ':' || client_type || ':' || status FROM applications WHERE user_id=2", "Final_Name:licensed:approved");
+    try f.expectSql("SELECT count(*) FROM password_credentials WHERE user_id=2", "0");
+    try std.testing.expectEqualStrings("Final_Name", f.mojang.last_name.?.display());
+    try f.sql("DELETE FROM game_identities WHERE user_id=2");
+    try f.change(.PATCH, "/api/v1/admin/users/2", "{\"resolve_licensed_mojang_uuid\":true}", 500, "internal_error");
+    try f.change(.PATCH, "/api/v1/admin/users/1", "{\"resolve_licensed_mojang_uuid\":true}", 404, "application_not_found");
+    try f.change(.PATCH, "/api/v1/admin/users/1", "{\"discord_id\":\"123456789012345678\"}", 204, null);
+    var card = try f.get("/api/v1/admin/users/1");
+    defer card.deinit();
+    const p = try parse(card.body);
+    defer p.deinit();
+    try std.testing.expect(p.value.object.get("application").? == .null);
+}
+
+test "admin_routes_test licensed preparation stale preserves competing commit" {
+    for ([_][]const u8{
+        "UPDATE applications SET minecraft_nickname='Competing',minecraft_nickname_normalized='competing' WHERE user_id=2",
+        "UPDATE applications SET status='approved' WHERE user_id=2",
+        "UPDATE applications SET client_type='cracked' WHERE user_id=2",
+        "UPDATE applications SET status='approved' WHERE user_id=2; UPDATE applications SET status='pending' WHERE user_id=2",
+        "UPDATE applications SET client_type='cracked' WHERE user_id=2; UPDATE applications SET client_type='licensed' WHERE user_id=2",
+        "UPDATE game_identities SET licensed_mojang_uuid='7af7fe6c-cb9e-4012-bef8-adf078f34694' WHERE user_id=2",
+        "DELETE FROM game_identities WHERE user_id=2",
+    }) |sql| {
+        var f: Fixture = undefined;
+        try f.init();
+        defer f.deinit();
+        const Hook = struct {
+            fixture: *Fixture,
+            sql: []const u8,
+            after: ?[]u8 = null,
+            fn run(ctx: *anyopaque) !void {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                var other = try db.Pool.open(std.testing.allocator, self.fixture.database.database_url);
+                defer other.close();
+                var commands = std.mem.splitScalar(u8, self.sql, ';');
+                while (commands.next()) |command| try execute(&other, command);
+                self.after = try self.fixture.state();
+            }
+        };
+        var hook = Hook{ .fixture = &f, .sql = sql };
+        defer if (hook.after) |value| std.testing.allocator.free(value);
+        f.mojang.before_return = Hook.run;
+        f.mojang.hook_context = &hook;
+        const token = try f.csrf();
+        var r = try f.mutate(.POST, "/api/v1/admin/applications/2/approve", "{}", &token);
+        defer r.deinit();
+        try expectError(&r, 409, "identity_changed");
+        const after = try f.state();
+        defer std.testing.allocator.free(after);
+        try std.testing.expectEqualStrings(hook.after.?, after);
+    }
+}
+
+test "admin_routes_test repository rejects missing future expired preparation at locked boundary" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const token = try f.csrf();
+    const repo = &f.router.admin_router.application_service.repository;
+    const snapshot = try repo.readAdmissionSnapshot(2);
+    var prepared = domain.licensed_admission.Prepared{
+        .expected = snapshot,
+        .intent = .{ .operation = .approve, .status = .approved },
+        .observation = null,
+    };
+    const proof = .{ .token_hash = proofHash(&f.issued.session_token), .csrf_hash = proofHash(&token), .next_csrf_hash = proofHash("next") };
+    const before = try f.state();
+    defer std.testing.allocator.free(before);
+    try std.testing.expectError(error.MojangObservationRequired, repo.mutateAdmin(&f.router.admin_router.auth_service, 1, 2, .approve, .{ .status = .approved }, proof, prepared, &f.resolver.clock));
+    prepared.observation = .{ .requested = snapshot.application.?.nickname, .returned = snapshot.application.?.nickname, .uuid = f.mojang.uuid.?, .observed_ns = 1 };
+    try std.testing.expectError(error.IdentityChanged, repo.mutateAdmin(&f.router.admin_router.auth_service, 1, 2, .approve, .{ .status = .approved }, proof, prepared, &f.resolver.clock));
+    prepared.observation.?.observed_ns = 0;
+    f.mojang.now_ns = 10 * std.time.ns_per_s + 1;
+    try std.testing.expectError(error.IdentityChanged, repo.mutateAdmin(&f.router.admin_router.auth_service, 1, 2, .approve, .{ .status = .approved }, proof, prepared, &f.resolver.clock));
+    const after = try f.state();
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings(before, after);
+    f.mojang.now_ns = 10 * std.time.ns_per_s;
+    try repo.mutateAdmin(&f.router.admin_router.auth_service, 1, 2, .approve, .{ .status = .approved }, proof, prepared, &f.resolver.clock);
+    try f.expectSql("SELECT status::text FROM applications WHERE user_id=2", "approved");
+}
+
+fn proofHash(token: []const u8) [66]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(token, &digest, .{});
+    var out: [66]u8 = undefined;
+    out[0..2].* = "\\x".*;
+    out[2..].* = std.fmt.bytesToHex(digest, .lower);
+    return out;
 }
 
 test "admin_routes_test converted cracked subject sees password setup requirement on own account" {
@@ -393,7 +603,7 @@ test "admin_routes_test audit failures rollback decisions edits credentials revo
     try f.expectSql("SELECT minecraft_nickname || ':' || client_type || ':' || status FROM applications WHERE user_id=2", "Subject_Name:licensed:approved");
     try f.expectSql("SELECT count(*) FROM password_credentials WHERE user_id=2", "1");
     try f.expectSql("SELECT count(*) FROM web_sessions WHERE user_id=2 AND revoked_at IS NULL", "2");
-    try f.expectSql("SELECT count(*) FROM audit_log", "1");
+    try f.expectSql("SELECT count(*) FROM audit_log", "2");
     try f.sql("ALTER TABLE audit_log DROP CONSTRAINT fail_task8");
     var retry = try f.mutate(.PATCH, "/api/v1/admin/users/2", patch, &token);
     defer retry.deinit();
@@ -403,7 +613,7 @@ test "admin_routes_test audit failures rollback decisions edits credentials revo
     try expectError(&replay, 403, "csrf_token_invalid");
     try f.expectSql("SELECT count(*) FROM password_credentials WHERE user_id=2", "0");
     try f.expectSql("SELECT count(*) FROM web_sessions WHERE user_id=2 AND revoked_at IS NULL", "0");
-    try f.expectSql("SELECT count(*) FROM audit_log", "5");
+    try f.expectSql("SELECT count(*) FROM audit_log", "7");
 }
 
 const Worker = struct {
@@ -458,7 +668,7 @@ test "admin_routes_test in-flight old OAuth callback cannot issue a live session
     var control = try db.Pool.open(std.testing.allocator, f.database.database_url);
     defer control.close();
     var provider = discord.DiscordService.init(std.testing.allocator, &callback_pool, &f.loaded, .{ .authorization_endpoint = "http://unused", .context = &f.context, .exchange = raceExchange, .identity = raceIdentity });
-    var router = try routes.Router.init(std.testing.allocator, &provider, &f.loaded);
+    var router = try routes.Router.init(std.testing.allocator, &provider, &f.loaded, &f.resolver);
     defer router.deinit();
     var server = http.Server.init(std.testing.allocator);
     defer server.deinit();
@@ -506,7 +716,7 @@ test "admin_routes_test concurrent own password mutation and admin ban have cons
     var control = try db.Pool.open(std.testing.allocator, f.database.database_url);
     defer control.close();
     var provider = discord.DiscordService.init(std.testing.allocator, &account_pool, &f.loaded, .{ .authorization_endpoint = "http://unused", .context = &f.context, .exchange = unusedExchange, .identity = unusedIdentity });
-    var router = try routes.Router.init(std.testing.allocator, &provider, &f.loaded);
+    var router = try routes.Router.init(std.testing.allocator, &provider, &f.loaded, &f.resolver);
     defer router.deinit();
     var server = http.Server.init(std.testing.allocator);
     defer server.deinit();
@@ -534,6 +744,9 @@ test "admin_routes_test concurrent own password mutation and admin ban have cons
     try execute(&control, "SELECT pg_advisory_unlock(889)");
     while (!own.done.load(.acquire) or !edit.done.load(.acquire)) std.Thread.yield() catch {};
     try std.testing.expectEqual(@as(u16, 204), own.status);
-    try std.testing.expectEqual(@as(u16, 204), edit.status);
+    // The competing password commit advances the subject revision. Admin must
+    // reload rather than silently replay stale prepared evidence.
+    try std.testing.expectEqual(@as(u16, 409), edit.status);
+    try f.change(.PATCH, "/api/v1/admin/users/2", patch, 204, null);
     try f.expectSql("SELECT count(*) FROM web_sessions WHERE user_id=2 AND revoked_at IS NULL", "0");
 }

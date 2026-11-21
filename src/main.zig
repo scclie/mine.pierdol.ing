@@ -9,6 +9,8 @@ const auth_routes = @import("auth_routes");
 const health = @import("health");
 const game_auth_routes = @import("game_auth_routes");
 const runtime = @import("runtime");
+const mojang = @import("mojang");
+const mojang_transport = @import("mojang_transport");
 
 pub fn main() !void {
     const args = try std.process.argsAlloc(std.heap.page_allocator);
@@ -27,11 +29,18 @@ pub fn main() !void {
 
     if (mode == .migrate_only) return;
 
+    var client = try mojang_transport.Client.init(std.heap.page_allocator);
+    defer client.deinit();
+    var monotonic = try mojang.Monotonic.init();
+    var production = mojang.Production.init(monotonic.clock(), client.transport());
+    defer production.deinit();
+    const resolver = production.resolver();
+
     var deny_list = try domain.password.loadDefaultDenyList(std.heap.page_allocator);
     defer deny_list.deinit();
 
     var discord_service = discord.DiscordService.initProduction(std.heap.page_allocator, &pool, &configuration);
-    var auth_router = try auth_routes.Router.init(std.heap.page_allocator, &discord_service, &configuration);
+    var auth_router = try auth_routes.Router.init(std.heap.page_allocator, &discord_service, &configuration, &resolver);
     defer auth_router.deinit();
     var server = http.Server.init(std.heap.page_allocator);
     defer server.deinit();

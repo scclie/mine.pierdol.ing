@@ -1,4 +1,5 @@
 const std = @import("std");
+const fake_mojang = @import("fake_mojang");
 const c = @cImport({
     @cInclude("stdlib.h");
 });
@@ -115,7 +116,9 @@ test "oauth_route_test production HTTP uses a local TCP Discord provider" {
         const identity_url = try std.fmt.allocPrint(std.testing.allocator, "http://127.0.0.1:{d}/api/users/@me", .{stub.listener.listen_address.getPort()});
         defer std.testing.allocator.free(identity_url);
         var service = discord.DiscordService.initProductionForTest(std.testing.allocator, &test_database.pool, &loaded_config, token_url, identity_url);
-        var router = try auth_routes.Router.init(std.testing.allocator, &service, &loaded_config);
+        var fake: fake_mojang.Fake = .{};
+        const resolver = fake.resolver();
+        var router = try auth_routes.Router.init(std.testing.allocator, &service, &loaded_config, &resolver);
         defer router.deinit();
         var server = http.Server.init(std.testing.allocator);
         defer server.deinit();
@@ -245,7 +248,9 @@ test "oauth_route_test Discord login uses PKCE and callbacks consume one-time st
         .identity = LocalDiscordEndpoint.identity,
         .context = &local_discord,
     });
-    var router = try auth_routes.Router.init(std.testing.allocator, &discord_service, &loaded_config);
+    var fake: fake_mojang.Fake = .{};
+    const resolver = fake.resolver();
+    var router = try auth_routes.Router.init(std.testing.allocator, &discord_service, &loaded_config, &resolver);
     defer router.deinit();
 
     var server = http.Server.init(std.testing.allocator);
@@ -340,7 +345,9 @@ test "oauth_route_test independent browsers cannot swap login sessions and bindi
         .identity = LocalDiscordEndpoint.identity,
         .context = &endpoint,
     });
-    var router = try auth_routes.Router.init(std.testing.allocator, &service, &loaded);
+    var fake: fake_mojang.Fake = .{};
+    const resolver = fake.resolver();
+    var router = try auth_routes.Router.init(std.testing.allocator, &service, &loaded, &resolver);
     defer router.deinit();
     var server = http.Server.init(std.testing.allocator);
     defer server.deinit();

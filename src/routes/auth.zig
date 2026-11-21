@@ -1,4 +1,5 @@
 const std = @import("std");
+const mojang = @import("mojang");
 const config = @import("config");
 const auth = @import("auth");
 const discord = @import("discord");
@@ -15,10 +16,10 @@ pub const Router = struct {
     account_router: account.Router,
     admin_router: admin.Router,
 
-    pub fn init(allocator: std.mem.Allocator, discord_service: *discord.DiscordService, configuration: *const config.Config) !Router {
-        var account_router = try account.Router.init(allocator, discord_service.pool, configuration);
+    pub fn init(allocator: std.mem.Allocator, discord_service: *discord.DiscordService, configuration: *const config.Config, resolver: *const mojang.Resolver) !Router {
+        var account_router = try account.Router.init(allocator, discord_service.pool, configuration, resolver);
         errdefer account_router.deinit();
-        return .{ .allocator = allocator, .discord_service = discord_service, .configuration = configuration, .account_router = account_router, .admin_router = try admin.Router.init(allocator, discord_service.pool, configuration) };
+        return .{ .allocator = allocator, .discord_service = discord_service, .configuration = configuration, .account_router = account_router, .admin_router = try admin.Router.init(allocator, discord_service.pool, configuration, resolver) };
     }
 
     pub fn deinit(self: *Router) void {

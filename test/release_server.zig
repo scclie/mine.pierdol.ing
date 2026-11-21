@@ -1,4 +1,5 @@
 const std = @import("std");
+const fake_mojang = @import("fake_mojang");
 const db = @import("db_pool");
 const config = @import("config");
 const http = @import("http_server");
@@ -21,7 +22,9 @@ test "release_server" {
     const authorize = try std.fmt.allocPrint(allocator, "{s}/authorize", .{origin});
     var service = discord.DiscordService.initProductionForTest(allocator, &pool, &configuration, token, identity);
     service.endpoint.authorization_endpoint = authorize;
-    var router = try routes.Router.init(allocator, &service, &configuration);
+    var fake: fake_mojang.Fake = .{};
+    const resolver = fake.resolver();
+    var router = try routes.Router.init(allocator, &service, &configuration, &resolver);
     defer router.deinit();
     var server = http.Server.init(allocator);
     defer server.deinit();

@@ -2,11 +2,54 @@ const std = @import("std");
 const domain = @import("domain");
 const password = domain.password;
 const applications = @import("applications");
+const application_service = @import("application_service");
+const fake_mojang = @import("fake_mojang");
 const migrations = @import("migrations");
 const postgres = @import("support/postgres.zig");
 
 fn denyList() !password.DenyList {
     return password.loadDefaultDenyList(std.testing.allocator);
+}
+
+fn create(repository: *applications.ApplicationRepository, input: applications.CreateInput) !applications.Application {
+    var fake: fake_mojang.Fake = .{ .uuid = try domain.mojang_uuid.Uuid.parseAdmin("4af7fe6c-cb9e-4012-bef8-adf078f34694") };
+    const resolver = fake.resolver();
+    if (input.client_type == .cracked) return repository.create(input, .{ .expected = null, .intent = .{ .operation = .create, .nickname = input.nickname, .client_type = .cracked }, .observation = null }, &resolver.clock);
+    var service = try application_service.ApplicationService.init(std.testing.allocator, repository.pool, &resolver);
+    defer service.deinit();
+    return service.create(input);
+}
+
+test "password_test licensed repository create requires preparation and fresh matching evidence" {
+    var database = try postgres.TestDatabase.create(std.testing.allocator, std.posix.getenv("TEST_DATABASE_URL") orelse return error.TestDatabaseUrlNotConfigured);
+    defer database.deinit();
+    try migrations.apply(&database.pool);
+    var repository = applications.ApplicationRepository.init(&database.pool);
+    const name = try domain.nickname.validateNickname("PreparedUser");
+    const input = applications.CreateInput{ .discord_id = "prepared-user", .discord_username = "prepared", .nickname = name, .client_type = .licensed, .about_me = "Build", .discovery_source = "Friend", .password_hash = null };
+    var fake: fake_mojang.Fake = .{ .now_ns = 11 * std.time.ns_per_s, .uuid = try domain.mojang_uuid.Uuid.parseAdmin("4af7fe6c-cb9e-4012-bef8-adf078f34694") };
+    const resolver = fake.resolver();
+    var prepared = domain.licensed_admission.Prepared{ .expected = null, .intent = .{ .operation = .create, .nickname = name, .client_type = .licensed }, .observation = null };
+    const Attempt = struct {
+        fn run(repo: *applications.ApplicationRepository, value: applications.CreateInput, evidence: domain.licensed_admission.Prepared, clock: *const @import("mojang").Clock) !void {
+            _ = try repo.create(value, evidence, clock);
+        }
+    };
+    try std.testing.expectError(error.MojangObservationRequired, Attempt.run(&repository, input, prepared, &resolver.clock));
+    prepared.observation = .{ .requested = name, .returned = name, .uuid = fake.uuid.?, .observed_ns = 0 };
+    try std.testing.expectError(error.IdentityChanged, Attempt.run(&repository, input, prepared, &resolver.clock));
+    prepared.observation.?.observed_ns = fake.now_ns + 1;
+    try std.testing.expectError(error.IdentityChanged, Attempt.run(&repository, input, prepared, &resolver.clock));
+    var empty = try database.pool.query("SELECT (SELECT count(*) FROM users)+(SELECT count(*) FROM applications)+(SELECT count(*) FROM game_identities)+(SELECT count(*) FROM audit_log)", &.{});
+    defer empty.deinit();
+    try std.testing.expectEqualStrings("0", empty.value(0, 0));
+    var service = try application_service.ApplicationService.init(std.testing.allocator, &database.pool, &resolver);
+    defer service.deinit();
+    const application = try service.create(input);
+    try std.testing.expect(application.user_id > 0);
+    var bound = try database.pool.query("SELECT licensed_mojang_uuid::text FROM game_identities", &.{});
+    defer bound.deinit();
+    try std.testing.expectEqualStrings("4af7fe6c-cb9e-4012-bef8-adf078f34694", bound.value(0, 0));
 }
 
 test "password_test policy rejects short and locally denied passwords" {
@@ -51,7 +94,7 @@ test "password_test cracked applications persist only a hash with a creation aud
     defer std.testing.allocator.free(hash);
     const nickname = try domain.nickname.validateNickname("CrackedUser");
     var repository = applications.ApplicationRepository.init(&test_database.pool);
-    const application = try repository.create(.{
+    const application = try create(&repository, .{
         .discord_id = "discord-cracked-1",
         .discord_username = "cracked_user",
         .nickname = nickname,
@@ -88,7 +131,7 @@ test "password_test licensed applications have no credential row and reject a su
 
     const nickname = try domain.nickname.validateNickname("LicensedUser");
     var repository = applications.ApplicationRepository.init(&test_database.pool);
-    const application = try repository.create(.{
+    const application = try create(&repository, .{
         .discord_id = "discord-licensed-1",
         .discord_username = "licensed_user",
         .nickname = nickname,
@@ -108,7 +151,7 @@ test "password_test licensed applications have no credential row and reject a su
     try std.testing.expectEqualStrings("f", credential_result.value(0, 0));
 
     const rejected_nickname = try domain.nickname.validateNickname("NoHashUser");
-    try std.testing.expectError(error.PasswordNotAllowed, repository.create(.{
+    try std.testing.expectError(error.PasswordNotAllowed, create(&repository, .{
         .discord_id = "discord-licensed-2",
         .discord_username = "no_hash_user",
         .nickname = rejected_nickname,
@@ -127,7 +170,7 @@ test "password_test failed application creation rolls back user application cred
 
     var repository = applications.ApplicationRepository.init(&test_database.pool);
     const existing_nickname = try domain.nickname.validateNickname("TakenNickname");
-    _ = try repository.create(.{
+    _ = try create(&repository, .{
         .discord_id = "discord-existing-1",
         .discord_username = "existing_user",
         .nickname = existing_nickname,
@@ -137,7 +180,7 @@ test "password_test failed application creation rolls back user application cred
         .password_hash = null,
     });
 
-    try std.testing.expectError(error.QueryFailed, repository.create(.{
+    try std.testing.expectError(error.NicknameUnavailable, create(&repository, .{
         .discord_id = "discord-rolled-back-1",
         .discord_username = "rolled_back_user",
         .nickname = existing_nickname,
@@ -173,7 +216,7 @@ test "password_test replacement affects only approved cracked applications and s
     defer std.testing.allocator.free(replacement_hash);
     const nickname = try domain.nickname.validateNickname("ApprovedUser");
     var repository = applications.ApplicationRepository.init(&test_database.pool);
-    const application = try repository.create(.{
+    const application = try create(&repository, .{
         .discord_id = "discord-approved-1",
         .discord_username = "approved_user",
         .nickname = nickname,
@@ -184,7 +227,7 @@ test "password_test replacement affects only approved cracked applications and s
     });
 
     const licensed_nickname = try domain.nickname.validateNickname("ApprovedLicense");
-    const licensed_application = try repository.create(.{
+    const licensed_application = try create(&repository, .{
         .discord_id = "discord-approved-license-1",
         .discord_username = "approved_license",
         .nickname = licensed_nickname,

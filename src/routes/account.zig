@@ -1,4 +1,5 @@
 const std = @import("std");
+const mojang = @import("mojang");
 const auth = @import("auth");
 const config = @import("config");
 const db = @import("db_pool");
@@ -11,11 +12,11 @@ pub const Router = struct {
     auth_service: auth.AuthService,
     application_service: applications.ApplicationService,
 
-    pub fn init(allocator: std.mem.Allocator, pool: *db.Pool, configuration: *const config.Config) !Router {
+    pub fn init(allocator: std.mem.Allocator, pool: *db.Pool, configuration: *const config.Config, resolver: *const mojang.Resolver) !Router {
         return .{
             .allocator = allocator,
             .auth_service = auth.AuthService.init(allocator, pool, configuration),
-            .application_service = try applications.ApplicationService.init(allocator, pool),
+            .application_service = try applications.ApplicationService.init(allocator, pool, resolver),
         };
     }
 
@@ -43,7 +44,7 @@ fn dispatch(router: *Router, request: http.Request) !response.Response {
         try router.auth_service.requireCsrf(authentication, actor);
         const path = request.target[0 .. std.mem.indexOfScalar(u8, request.target, '?') orelse request.target.len];
         const mutation: applications.Mutation = if (std.mem.endsWith(u8, path, "/password")) .password else if (request.method == .PATCH) .resubmit else .create;
-        try router.application_service.mutate(actor, authentication, mutation, request.body);
+        try router.application_service.mutate(&router.auth_service, actor, authentication, mutation, request.body);
         if (mutation == .password) return response.Response.init(router.allocator, 204, "");
     }
     const body = try router.application_service.account(actor, authentication.session_token);
@@ -88,6 +89,13 @@ fn errorResponse(allocator: std.mem.Allocator, err: anyerror, request_id: []cons
         error.NicknameUnavailable => .{ .status = 409, .code = "nickname_unavailable" },
         error.NicknameImmutable => .{ .status = 409, .code = "nickname_immutable" },
         error.InvalidJson => .{ .status = 400, .code = "invalid_json" },
+        error.InvalidPatchField => .{ .status = 422, .code = "invalid_patch_field" },
+        error.IdentityChanged => .{ .status = 409, .code = "identity_changed" },
+        error.LicensedMojangUuidInUse => .{ .status = 409, .code = "licensed_mojang_uuid_in_use" },
+        error.LicensedMojangUuidMismatch => .{ .status = 409, .code = "licensed_mojang_uuid_mismatch" },
+        error.MinecraftProfileNotFound => .{ .status = 422, .code = "minecraft_profile_not_found" },
+        error.MinecraftProfileLookupUnavailable => .{ .status = 503, .code = "minecraft_profile_lookup_unavailable" },
+        error.MinecraftProfileLookupInvalid => .{ .status = 502, .code = "minecraft_profile_lookup_invalid" },
         error.PasswordRequiredForCracked => .{ .status = 422, .code = "password_required_for_cracked" },
         error.PasswordNotAllowedForLicensed => .{ .status = 422, .code = "password_not_allowed_for_licensed" },
         error.MinecraftNicknameRequired => .{ .status = 422, .code = "minecraft_nickname_required" },
@@ -105,5 +113,8 @@ fn errorResponse(allocator: std.mem.Allocator, err: anyerror, request_id: []cons
         error.PasswordDenied => .{ .status = 422, .code = "password_denied" },
         else => .{ .status = 500, .code = "internal_error" },
     };
-    return http.errors.errorResponse(allocator, mapped.status, mapped.code, "Account request could not be completed.", request_id);
+    var result = try http.errors.errorResponse(allocator, mapped.status, mapped.code, "Account request could not be completed.", request_id);
+    errdefer result.deinit();
+    try result.addHeader("Cache-Control", "no-store");
+    return result;
 }

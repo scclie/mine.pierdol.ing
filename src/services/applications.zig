@@ -3,6 +3,8 @@ const db = @import("db_pool");
 const domain = @import("domain");
 const repository = @import("applications_repository");
 const auth = @import("auth");
+const mojang = @import("mojang");
+const admission = domain.licensed_admission;
 const types = domain.types;
 
 pub const Mutation = repository.Mutation;
@@ -13,9 +15,20 @@ pub const ApplicationService = struct {
     allocator: std.mem.Allocator,
     repository: repository.ApplicationRepository,
     deny_list: domain.password.DenyList,
+    resolver: *const mojang.Resolver,
 
-    pub fn init(allocator: std.mem.Allocator, pool: *db.Pool) !ApplicationService {
-        return .{ .allocator = allocator, .repository = repository.ApplicationRepository.init(pool), .deny_list = try domain.password.loadDefaultDenyList(allocator) };
+    pub fn init(allocator: std.mem.Allocator, pool: *db.Pool, resolver: *const mojang.Resolver) !ApplicationService {
+        return .{ .allocator = allocator, .repository = repository.ApplicationRepository.init(pool), .deny_list = try domain.password.loadDefaultDenyList(allocator), .resolver = resolver };
+    }
+
+    pub fn create(self: *ApplicationService, input: repository.CreateInput) !repository.Application {
+        switch (input.client_type) {
+            .cracked => if (input.password_hash == null) return error.PasswordRequired,
+            .licensed => if (input.password_hash != null) return error.PasswordNotAllowed,
+        }
+        var prepared = admission.Prepared{ .expected = null, .intent = .{ .operation = .create, .nickname = input.nickname, .client_type = input.client_type }, .observation = null };
+        if (input.client_type == .licensed) prepared.observation = try self.resolver.resolve(input.nickname);
+        return self.repository.create(input, prepared, &self.resolver.clock);
     }
 
     pub fn deinit(self: *ApplicationService) void {
@@ -60,19 +73,26 @@ pub const ApplicationService = struct {
         return std.json.stringifyAlloc(self.allocator, payload, .{});
     }
 
-    pub fn mutate(self: *ApplicationService, actor: auth.AuthenticatedActor, request: auth.Request, mutation: Mutation, body: []const u8) !void {
-        var current = try self.repository.account(actor.user_id);
-        defer current.deinit();
-        if (current.rowCount() != 1) return error.SessionNotFound;
-        try repository.requireAction(.{ .user_id = actor.user_id, .role = actor.role }, mutation, parseStatus(&current), parseClientType(&current));
+    pub fn mutate(self: *ApplicationService, service: *auth.AuthService, actor: auth.AuthenticatedActor, request: auth.Request, mutation: Mutation, body: []const u8) !void {
+        const fresh_actor = try service.authenticate(request);
+        try service.requireCsrf(request, fresh_actor);
+        const snapshot = try self.repository.readAdmissionSnapshot(actor.user_id);
+        try repository.requireAction(.{ .user_id = actor.user_id, .role = fresh_actor.role }, mutation, if (snapshot.application) |app| app.status else null, if (snapshot.application) |app| app.client_type else null);
 
         // wipe all parsed data, including password copies
         var wiping = WipingAllocator{ .backing = self.allocator };
         var arena = std.heap.ArenaAllocator.init(.{ .ptr = &wiping, .vtable = &WipingAllocator.vtable });
         defer arena.deinit();
-        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), body, .{ .allocate = .alloc_always }) catch return error.InvalidJson;
-        if (parsed.value != .object) return error.InvalidJson;
-        const object = parsed.value.object;
+        // typed maps check duplicate keys in zig 0.13, unlike dynamic Value
+        const parsed = std.json.parseFromSlice(std.json.ArrayHashMap(std.json.Value), arena.allocator(), body, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" }) catch return error.InvalidJson;
+        const object = parsed.value.map.promote(arena.allocator());
+        var fields = object.iterator();
+        while (fields.next()) |entry| {
+            const key = entry.key_ptr.*;
+            for ([_][]const u8{ "uuid", "licensed_mojang_uuid", "resolve_licensed_mojang_uuid", "confirm_uuid_override", "identity_revision", "confirmed_override", "expected_revision", "application_revision", "observation" }) |forbidden| {
+                if (std.mem.eql(u8, key, forbidden)) return error.InvalidPatchField;
+            }
+        }
         var input: ?repository.AccountInput = null;
         var hash: ?[]u8 = null;
         defer if (hash) |value| {
@@ -103,7 +123,17 @@ pub const ApplicationService = struct {
             .next_csrf_hash = hashParameter(&unused_token),
         };
         defer std.crypto.utils.secureZero(u8, std.mem.asBytes(&proof));
-        try self.repository.mutateAccount(.{ .user_id = actor.user_id, .role = actor.role }, mutation, input, hash, proof);
+        var prepared: ?admission.Prepared = null;
+        if (input) |content| {
+            const intent = admission.Intent{ .operation = if (mutation == .create) .create else .resubmit, .nickname = content.nickname, .client_type = content.client_type };
+            const decision = try admission.evaluate(snapshot, intent);
+            var conflict = try self.repository.pool.query("SELECT user_id FROM applications WHERE minecraft_nickname_normalized=$1 AND user_id<>$2::bigint", &.{ content.nickname.canonical(), try std.fmt.allocPrint(arena.allocator(), "{d}", .{actor.user_id}) });
+            const taken = conflict.rowCount() != 0;
+            conflict.deinit();
+            if (taken) return error.NicknameUnavailable;
+            prepared = .{ .expected = snapshot, .intent = intent, .observation = if (decision.lookup_required) try self.resolver.resolve(content.nickname) else null };
+        }
+        try self.repository.mutateAccount(.{ .user_id = actor.user_id, .role = fresh_actor.role }, mutation, input, hash, proof, service, prepared, &self.resolver.clock);
     }
 
     fn hashPassword(self: *ApplicationService, password: []const u8) ![]u8 {
@@ -142,28 +172,30 @@ pub const ApplicationService = struct {
         defer result.deinit();
         if (result.rowCount() != 1) return error.UserNotFound;
         const status = std.meta.stringToEnum(types.ApplicationStatus, result.value(0, 7));
-        const Application = struct { minecraft_nickname: []const u8, client_type: []const u8, status: []const u8, about_me: []const u8, discovery_source: []const u8, decision_reason: ?[]const u8, submitted_at: []const u8, decided_at: ?[]const u8, decided_by_user_id: ?i64 };
+        const Application = struct { minecraft_nickname: []const u8, client_type: []const u8, status: []const u8, about_me: []const u8, discovery_source: []const u8, decision_reason: ?[]const u8, submitted_at: []const u8, decided_at: ?[]const u8, decided_by_user_id: ?i64, licensed_mojang_uuid: ?[]const u8, identity_revision: []const u8 };
         return std.json.stringifyAlloc(self.allocator, .{
             .user = .{ .id = user_id, .discord_id = result.value(0, 1), .discord_username = result.value(0, 2), .discord_global_name = nullable(result.value(0, 3)), .discord_avatar_hash = nullable(result.value(0, 4)) },
-            .application = if (status != null) @as(?Application, .{ .minecraft_nickname = result.value(0, 5), .client_type = result.value(0, 6), .status = result.value(0, 7), .about_me = result.value(0, 8), .discovery_source = result.value(0, 9), .decision_reason = if (std.mem.eql(u8, result.value(0, 11), "t")) null else result.value(0, 10), .submitted_at = result.value(0, 12), .decided_at = nullable(result.value(0, 13)), .decided_by_user_id = if (nullable(result.value(0, 14))) |value| try std.fmt.parseInt(i64, value, 10) else null }) else null,
+            .application = if (status != null) @as(?Application, .{ .minecraft_nickname = result.value(0, 5), .client_type = result.value(0, 6), .status = result.value(0, 7), .about_me = result.value(0, 8), .discovery_source = result.value(0, 9), .decision_reason = if (std.mem.eql(u8, result.value(0, 11), "t")) null else result.value(0, 10), .submitted_at = result.value(0, 12), .decided_at = nullable(result.value(0, 13)), .decided_by_user_id = if (nullable(result.value(0, 14))) |value| try std.fmt.parseInt(i64, value, 10) else null, .licensed_mojang_uuid = nullable(result.value(0, 16)), .identity_revision = result.value(0, 17) }) else null,
             .password_setup_required = status == .approved and std.mem.eql(u8, result.value(0, 6), "cracked") and std.mem.eql(u8, result.value(0, 15), "t"),
         }, .{});
     }
 
     pub fn mutateAdmin(self: *ApplicationService, service: *auth.AuthService, actor: auth.AuthenticatedActor, request: auth.Request, user_id: i64, mutation: AdminMutation, body: []const u8) !void {
+        const fresh_actor = try service.authenticate(request);
+        try service.requireCsrf(request, fresh_actor);
+        if (!domain.application.canPerform(fresh_actor.role, if (mutation == .edit) .edit_user_identity else if (mutation == .approve) .approve_application else .reject_application)) return error.InsufficientRole;
         var wiping = WipingAllocator{ .backing = self.allocator };
         var arena = std.heap.ArenaAllocator.init(.{ .ptr = &wiping, .vtable = &WipingAllocator.vtable });
         defer arena.deinit();
-        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), body, .{ .allocate = .alloc_always }) catch return error.InvalidJson;
-        if (parsed.value != .object) return error.InvalidJson;
-        const object = parsed.value.object;
+        const parsed = std.json.parseFromSlice(std.json.ArrayHashMap(std.json.Value), arena.allocator(), body, .{ .allocate = .alloc_always, .duplicate_field_behavior = .@"error" }) catch return error.InvalidJson;
+        const object = parsed.value.map.promote(arena.allocator());
         var fields = object.iterator();
         while (fields.next()) |entry| {
             const key = entry.key_ptr.*;
             const allowed_field = switch (mutation) {
                 .approve => false,
                 .reject => std.mem.eql(u8, key, "kind") or std.mem.eql(u8, key, "reason"),
-                .edit => std.mem.eql(u8, key, "minecraft_nickname") or std.mem.eql(u8, key, "discord_id") or std.mem.eql(u8, key, "client_type") or std.mem.eql(u8, key, "status") or std.mem.eql(u8, key, "reason"),
+                .edit => std.mem.eql(u8, key, "minecraft_nickname") or std.mem.eql(u8, key, "discord_id") or std.mem.eql(u8, key, "client_type") or std.mem.eql(u8, key, "status") or std.mem.eql(u8, key, "reason") or std.mem.eql(u8, key, "licensed_mojang_uuid") or std.mem.eql(u8, key, "confirm_uuid_override") or std.mem.eql(u8, key, "resolve_licensed_mojang_uuid") or std.mem.eql(u8, key, "identity_revision"),
             };
             if (!allowed_field) return error.InvalidPatchField;
         }
@@ -183,6 +215,27 @@ pub const ApplicationService = struct {
                 if (patch.reason == null) return error.ReasonRequired;
             },
             .edit => {
+                if (object.get("licensed_mojang_uuid")) |value| {
+                    patch.uuid = switch (value) {
+                        .null => .clear,
+                        .string => .{ .set = domain.mojang_uuid.Uuid.parseAdmin(value.string) catch return error.InvalidLicensedMojangUuid },
+                        else => return error.InvalidLicensedMojangUuid,
+                    };
+                }
+                if (object.get("confirm_uuid_override")) |value| {
+                    if (value != .bool) return error.InvalidUuidOperation;
+                    patch.confirmed_override = value.bool;
+                }
+                if (object.get("resolve_licensed_mojang_uuid")) |value| {
+                    if (value != .bool or !value.bool) return error.InvalidUuidOperation;
+                    patch.resolve_uuid = true;
+                }
+                if (object.get("identity_revision")) |value| {
+                    if (value != .string or value.string.len == 0) return error.InvalidIdentityRevision;
+                    for (value.string) |byte| if (!std.ascii.isDigit(byte)) return error.InvalidIdentityRevision;
+                    patch.expected_revision = std.fmt.parseInt(u64, value.string, 10) catch return error.InvalidIdentityRevision;
+                    if (patch.expected_revision.? > std.math.maxInt(i64)) return error.InvalidIdentityRevision;
+                }
                 if (object.contains("minecraft_nickname")) patch.nickname = domain.nickname.validateNickname(try adminField(object, "minecraft_nickname", error.InvalidMinecraftNickname)) catch return error.InvalidMinecraftNickname;
                 if (object.contains("discord_id")) {
                     const value = try adminField(object, "discord_id", error.InvalidDiscordId);
@@ -193,15 +246,36 @@ pub const ApplicationService = struct {
                 }
                 if (object.contains("client_type")) patch.client_type = std.meta.stringToEnum(types.ClientType, try adminField(object, "client_type", error.InvalidClientType)) orelse return error.InvalidClientType;
                 if (object.contains("status")) patch.status = std.meta.stringToEnum(types.ApplicationStatus, try adminField(object, "status", error.InvalidStatus)) orelse return error.InvalidStatus;
-                if (patch.nickname == null and patch.discord_id == null and patch.client_type == null and patch.status == null) return error.EmptyPatch;
+                if (patch.nickname == null and patch.discord_id == null and patch.client_type == null and patch.status == null and patch.uuid == .unchanged and !patch.resolve_uuid) return error.EmptyPatch;
                 if ((patch.status == .banned or patch.status == .rejected_retryable or patch.status == .rejected_final) and patch.reason == null) return error.ReasonRequired;
             },
+        }
+        const snapshot = try self.repository.readAdmissionSnapshot(user_id);
+        const intent = try repository.adminIntent(snapshot, mutation, patch);
+        // all local conflicts are checked and SQL results released before lookup.
+        const subject = try std.fmt.allocPrint(arena.allocator(), "{d}", .{user_id});
+        if (patch.nickname) |name| {
+            var conflict = try self.repository.pool.query("SELECT user_id FROM applications WHERE minecraft_nickname_normalized=$1 AND user_id<>$2::bigint", &.{ name.canonical(), subject });
+            const taken = conflict.rowCount() != 0;
+            conflict.deinit();
+            if (taken) return error.NicknameUnavailable;
+        }
+        if (patch.discord_id) |id| {
+            var conflict = try self.repository.pool.query("SELECT id FROM users WHERE discord_id=$1 AND id<>$2::bigint", &.{ id, subject });
+            const taken = conflict.rowCount() != 0;
+            conflict.deinit();
+            if (taken) return error.DiscordIdInUse;
+        }
+        var prepared = admission.Prepared{ .expected = snapshot, .intent = intent, .observation = null };
+        if (snapshot.application != null) {
+            const decision = try admission.evaluate(snapshot, intent);
+            if (decision.lookup_required) prepared.observation = try self.resolver.resolve(decision.final.nickname);
         }
         var unused = randomToken();
         defer std.crypto.utils.secureZero(u8, &unused);
         var proof = repository.SessionProof{ .token_hash = hashParameter(request.session_token), .csrf_hash = hashParameter(request.csrf_token orelse return error.CsrfTokenRequired), .next_csrf_hash = hashParameter(&unused) };
         defer std.crypto.utils.secureZero(u8, std.mem.asBytes(&proof));
-        try self.repository.mutateAdmin(service, actor.user_id, user_id, mutation, patch, proof);
+        try self.repository.mutateAdmin(service, actor.user_id, user_id, mutation, patch, proof, prepared, &self.resolver.clock);
     }
 };
 

@@ -8,3 +8,4 @@ public/
 !.env.example
 test-results/
 result
+test/__pycache__/

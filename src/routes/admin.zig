@@ -1,4 +1,5 @@
 const std = @import("std");
+const mojang = @import("mojang");
 const auth = @import("auth");
 const config = @import("config");
 const db = @import("db_pool");
@@ -13,8 +14,8 @@ pub const Router = struct {
     auth_service: auth.AuthService,
     application_service: applications.ApplicationService,
 
-    pub fn init(allocator: std.mem.Allocator, pool: *db.Pool, configuration: *const config.Config) !Router {
-        return .{ .allocator = allocator, .auth_service = auth.AuthService.init(allocator, pool, configuration), .application_service = try applications.ApplicationService.init(allocator, pool) };
+    pub fn init(allocator: std.mem.Allocator, pool: *db.Pool, configuration: *const config.Config, resolver: *const mojang.Resolver) !Router {
+        return .{ .allocator = allocator, .auth_service = auth.AuthService.init(allocator, pool, configuration), .application_service = try applications.ApplicationService.init(allocator, pool, resolver) };
     }
     pub fn deinit(self: *Router) void {
         self.application_service.deinit();
@@ -158,7 +159,23 @@ fn errorResponse(allocator: std.mem.Allocator, err: anyerror, request_id: []cons
         error.ReasonRequired => .{ .status = 422, .code = "reason_required" },
         error.ReasonTooLong => .{ .status = 422, .code = "reason_too_long" },
         error.InvalidRejectionKind => .{ .status = 422, .code = "invalid_rejection_kind" },
+        error.InvalidLicensedMojangUuid => .{ .status = 422, .code = "invalid_licensed_mojang_uuid" },
+        error.LicensedMojangUuidRequired => .{ .status = 422, .code = "licensed_mojang_uuid_required" },
+        error.LicensedMojangUuidNotApplicable => .{ .status = 422, .code = "licensed_mojang_uuid_not_applicable" },
+        error.UuidOverrideConfirmationRequired => .{ .status = 422, .code = "uuid_override_confirmation_required" },
+        error.InvalidUuidOperation => .{ .status = 422, .code = "invalid_uuid_operation" },
+        error.InvalidIdentityRevision => .{ .status = 422, .code = "invalid_identity_revision" },
+        error.MinecraftProfileNotFound => .{ .status = 422, .code = "minecraft_profile_not_found" },
+        error.LicensedMojangUuidInUse => .{ .status = 409, .code = "licensed_mojang_uuid_in_use" },
+        error.LicensedMojangUuidMismatch => .{ .status = 409, .code = "licensed_mojang_uuid_mismatch" },
+        error.LicensedMojangUuidAlreadyResolved => .{ .status = 409, .code = "licensed_mojang_uuid_already_resolved" },
+        error.IdentityChanged => .{ .status = 409, .code = "identity_changed" },
+        error.MinecraftProfileLookupUnavailable => .{ .status = 503, .code = "minecraft_profile_lookup_unavailable" },
+        error.MinecraftProfileLookupInvalid => .{ .status = 502, .code = "minecraft_profile_lookup_invalid" },
         else => .{ .status = 500, .code = "internal_error" },
     };
-    return http.errors.errorResponse(allocator, mapped.status, mapped.code, "Admin request could not be completed.", request_id);
+    var result = try http.errors.errorResponse(allocator, mapped.status, mapped.code, "Admin request could not be completed.", request_id);
+    errdefer result.deinit();
+    try result.addHeader("Cache-Control", "no-store");
+    return result;
 }

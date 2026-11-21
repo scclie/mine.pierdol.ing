@@ -26,6 +26,40 @@ pub fn build(b: *std.Build) void {
     });
     domain_module.addImport("password_deny_list", password_deny_list_module);
 
+    const mojang_module = b.createModule(.{ .root_source_file = b.path("src/services/mojang.zig"), .target = target, .optimize = optimize });
+    mojang_module.addImport("domain", domain_module);
+    const fake_mojang_module = b.createModule(.{ .root_source_file = b.path("test/support/mojang.zig"), .target = target, .optimize = optimize });
+    fake_mojang_module.addImport("domain", domain_module);
+    fake_mojang_module.addImport("mojang", mojang_module);
+    const mojang_options = b.addOptions();
+    inline for (.{ .{ "mojang-ca-bundle", "MOJANG_CA_BUNDLE", "ca_bundle" }, .{ "mojang-curl-version", "MOJANG_CURL_VERSION", "curl_version" }, .{ "mojang-ares-version", "MOJANG_ARES_VERSION", "ares_version" }, .{ "mojang-openssl-version", "MOJANG_OPENSSL_VERSION", "openssl_version" } }) |entry| {
+        const value = b.option([]const u8, entry[0], "Selected Task 3A build metadata") orelse b.graph.env_map.get(entry[1]) orelse "";
+        mojang_options.addOption([]const u8, entry[2], value);
+    }
+    const mojang_transport_module = b.createModule(.{ .root_source_file = b.path("src/services/mojang_transport.zig"), .target = target, .optimize = optimize });
+    mojang_transport_module.addImport("domain", domain_module);
+    mojang_transport_module.addImport("mojang", mojang_module);
+    const mojang_build_module = mojang_options.createModule();
+    mojang_transport_module.addImport("mojang_build", mojang_build_module);
+    const mojang_tests = b.addTest(.{ .root_source_file = b.path("test/mojang_test.zig"), .target = target, .optimize = optimize, .filters = b.args orelse &.{} });
+    mojang_tests.root_module.addImport("domain", domain_module);
+    mojang_tests.root_module.addImport("mojang", mojang_module);
+    mojang_tests.root_module.addImport("fake_mojang", fake_mojang_module);
+    const run_mojang = b.addRunArtifact(mojang_tests);
+    b.step("test-mojang", "Run DB-free resolver policy tests").dependOn(&run_mojang.step);
+    const transport_support = b.createModule(.{ .root_source_file = b.path("test/support/mojang_transport.zig"), .target = target, .optimize = optimize });
+    transport_support.addImport("mojang", mojang_module);
+    transport_support.addImport("domain", domain_module);
+    transport_support.addImport("mojang_transport", mojang_transport_module);
+    const transport_tests = transportTests(b, "test", target, optimize, b.args orelse &.{}, domain_module, mojang_module, mojang_transport_module, transport_support, mojang_build_module);
+    b.step("check-mojang-transport", "Compile only the isolated transport tests").dependOn(&transport_tests.step);
+    b.step("test-mojang-transport", "Explicit DB-free transport tests").dependOn(&b.addRunArtifact(transport_tests).step);
+    const install_transport = b.step("install-mojang-transport-tests", "Install fixed-filter DB-free transport test artifacts only");
+    inline for (.{ .{ "mojang-transport-capability-tests", "mojang transport dependency" }, .{ "mojang-transport-tests", "mojang transport" } }) |entry| {
+        const artifact = transportTests(b, entry[0], target, optimize, &.{entry[1]}, domain_module, mojang_module, mojang_transport_module, transport_support, mojang_build_module);
+        install_transport.dependOn(&b.addInstallArtifact(artifact, .{}).step);
+    }
+
     const config_module = b.createModule(.{
         .root_source_file = b.path("src/config.zig"),
         .target = target,
@@ -105,6 +139,7 @@ pub fn build(b: *std.Build) void {
     applications_module.addImport("domain", domain_module);
     applications_module.addImport("auth", auth_module);
     applications_module.addImport("users", users_module);
+    applications_module.addImport("mojang", mojang_module);
     const application_service_module = b.createModule(.{
         .root_source_file = b.path("src/services/applications.zig"),
         .target = target,
@@ -113,6 +148,7 @@ pub fn build(b: *std.Build) void {
     application_service_module.addImport("db_pool", pool_module);
     application_service_module.addImport("domain", domain_module);
     application_service_module.addImport("auth", auth_module);
+    application_service_module.addImport("mojang", mojang_module);
     application_service_module.addImport("applications_repository", applications_module);
     const account_routes_module = b.createModule(.{
         .root_source_file = b.path("src/routes/account.zig"),
@@ -147,6 +183,7 @@ pub fn build(b: *std.Build) void {
     auth_routes_module.addImport("http_server", http_server_module);
     auth_routes_module.addImport("account_routes", account_routes_module);
     auth_routes_module.addImport("admin_routes", admin_routes_module);
+    for ([_]*std.Build.Module{ account_routes_module, admin_routes_module, auth_routes_module }) |module| module.addImport("mojang", mojang_module);
 
     const exe = b.addExecutable(.{
         .name = "mine-api",
@@ -164,8 +201,23 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("game_auth_routes", game_auth_routes_module);
     exe.root_module.addImport("health", health_module);
     exe.root_module.addImport("runtime", runtime_module);
+    exe.root_module.addImport("mojang", mojang_module);
+    exe.root_module.addImport("mojang_transport", mojang_transport_module);
+    const metadata_source = b.addWriteFiles().add("mojang_metadata.zig",
+        \\const build = @import("mojang_build");
+        \\pub export const mojang_transport_build_metadata = ("MOJANG_BUILD\n" ++ build.ca_bundle ++ "\n" ++ build.curl_version ++ "\n" ++ build.ares_version ++ "\n" ++ build.openssl_version ++ "\n").*;
+    );
+    const metadata_object = b.addObject(.{ .name = "mojang-build-metadata", .root_source_file = metadata_source, .target = target, .optimize = optimize });
+    metadata_object.root_module.addImport("mojang_build", mojang_build_module);
+    // this object is already compiled with mojang_build.
+    exe.addObjectFile(metadata_object.getEmittedBin());
+    exe.forceUndefinedSymbol("mojang_transport_build_metadata");
     exe.linkLibC();
     exe.linkSystemLibrary("pq");
+    exe.linkSystemLibrary2("curl", .{ .use_pkg_config = .no, .needed = true });
+    exe.linkSystemLibrary2("ssl", .{ .use_pkg_config = .no, .needed = true });
+    exe.linkSystemLibrary2("crypto", .{ .use_pkg_config = .no, .needed = true });
+    transportRPaths(b, exe, true);
     b.installArtifact(exe);
 
     const release_server = b.addTest(.{
@@ -213,6 +265,7 @@ pub fn build(b: *std.Build) void {
     });
     migration_tests.root_module.addImport("db_pool", pool_module);
     migration_tests.root_module.addImport("migrations", migrations_module);
+    migration_tests.root_module.addImport("migration_files", migration_files_module);
     migration_tests.linkLibC();
     migration_tests.linkSystemLibrary("pq");
     const run_migration_tests = b.addRunArtifact(migration_tests);
@@ -227,6 +280,9 @@ pub fn build(b: *std.Build) void {
     password_tests.root_module.addImport("migrations", migrations_module);
     password_tests.root_module.addImport("domain", domain_module);
     password_tests.root_module.addImport("applications", applications_module);
+    password_tests.root_module.addImport("application_service", application_service_module);
+    password_tests.root_module.addImport("mojang", mojang_module);
+    password_tests.root_module.addImport("fake_mojang", fake_mojang_module);
     password_tests.linkLibC();
     password_tests.linkSystemLibrary("pq");
     const run_password_tests = b.addRunArtifact(password_tests);
@@ -247,6 +303,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     postgres_module.addImport("db_pool", pool_module);
+    const application_repository_tests = b.addTest(.{
+        .root_source_file = b.path("test/application_repository_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = b.args orelse &.{},
+    });
+    application_repository_tests.root_module.addImport("applications", applications_module);
+    application_repository_tests.root_module.addImport("db_pool", pool_module);
+    application_repository_tests.root_module.addImport("domain", domain_module);
+    application_repository_tests.root_module.addImport("migrations", migrations_module);
+    application_repository_tests.root_module.addImport("postgres", postgres_module);
+    application_repository_tests.linkLibC();
+    application_repository_tests.linkSystemLibrary("pq");
+    const run_application_repository_tests = b.addRunArtifact(application_repository_tests);
     auth_tests.root_module.addImport("postgres", postgres_module);
     auth_tests.linkLibC();
     auth_tests.linkSystemLibrary("pq");
@@ -283,6 +353,7 @@ pub fn build(b: *std.Build) void {
     account_route_tests.root_module.addImport("http_server", http_server_module);
     account_route_tests.root_module.addImport("discord", discord_module);
     account_route_tests.root_module.addImport("auth_routes", auth_routes_module);
+    account_route_tests.root_module.addImport("applications", applications_module);
     account_route_tests.linkLibC();
     account_route_tests.linkSystemLibrary("pq");
     const run_account_route_tests = b.addRunArtifact(account_route_tests);
@@ -305,6 +376,10 @@ pub fn build(b: *std.Build) void {
     admin_route_tests.linkLibC();
     admin_route_tests.linkSystemLibrary("pq");
     const run_admin_route_tests = b.addRunArtifact(admin_route_tests);
+    for ([_]*std.Build.Step.Compile{ release_server, oauth_route_tests, account_route_tests, admin_route_tests }) |artifact| {
+        artifact.root_module.addImport("mojang", mojang_module);
+        artifact.root_module.addImport("fake_mojang", fake_mojang_module);
+    }
 
     const game_auth_route_tests = b.addTest(.{
         .root_source_file = b.path("test/game_auth_routes_test.zig"),
@@ -422,6 +497,7 @@ pub fn build(b: *std.Build) void {
     const run_response_tests = b.addRunArtifact(response_tests);
 
     const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_mojang.step);
     test_step.dependOn(&run_response_tests.step);
     test_step.dependOn(&run_wire_tests.step);
     test_step.dependOn(&run_runtime_tests.step);
@@ -430,11 +506,38 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_domain_tests.step);
     test_step.dependOn(&run_migration_tests.step);
     test_step.dependOn(&run_password_tests.step);
+    test_step.dependOn(&run_application_repository_tests.step);
     test_step.dependOn(&run_auth_tests.step);
     test_step.dependOn(&run_oauth_route_tests.step);
     test_step.dependOn(&run_account_route_tests.step);
     test_step.dependOn(&run_admin_route_tests.step);
     test_step.dependOn(&run_pool_tests.step);
+}
+
+fn transportRPaths(b: *std.Build, artifact: *std.Build.Step.Compile, pq: bool) void {
+    // canonical directories of explicitly supplied libs only
+    for ([_][]const u8{ "curl", "cares", "ssl", "crypto", "z", "pq" }) |name| {
+        if (!pq and std.mem.eql(u8, name, "pq")) continue;
+        for (b.search_prefixes.items) |prefix| {
+            const file = b.fmt("{s}/lib/lib{s}.so", .{ prefix, name });
+            const real = std.fs.cwd().realpathAlloc(b.allocator, file) catch continue;
+            artifact.addRPath(.{ .cwd_relative = std.fs.path.dirname(real).? });
+            break;
+        }
+    }
+}
+
+fn transportTests(b: *std.Build, name: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, filters: []const []const u8, domain: *std.Build.Module, mojang: *std.Build.Module, adapter: *std.Build.Module, support: *std.Build.Module, metadata: *std.Build.Module) *std.Build.Step.Compile {
+    const artifact = b.addTest(.{ .name = name, .root_source_file = b.path("test/mojang_transport_test.zig"), .target = target, .optimize = optimize, .filters = filters });
+    artifact.root_module.addImport("domain", domain);
+    artifact.root_module.addImport("mojang", mojang);
+    artifact.root_module.addImport("mojang_transport", adapter);
+    artifact.root_module.addImport("mojang_transport_support", support);
+    artifact.root_module.addImport("mojang_build", metadata);
+    artifact.linkLibC();
+    for ([_][]const u8{ "curl", "ssl", "crypto" }) |library| artifact.linkSystemLibrary2(library, .{ .use_pkg_config = .no });
+    transportRPaths(b, artifact, false);
+    return artifact;
 }
 
 fn addMigrationFilesModule(b: *std.Build) *std.Build.Module {
