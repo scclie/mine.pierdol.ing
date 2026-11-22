@@ -1,7 +1,5 @@
-// test-only OAuth provider and static facade.
-import { createServer, request as proxyRequest } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { resolve, extname } from 'node:path';
+// test-only OAuth provider; static verification belongs to the frontend checkout.
+import { createServer } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 
 const codes = new Map();
@@ -45,24 +43,7 @@ const server = createServer(async (req, res) => {
     }
     return res.writeHead(url.pathname === '/__ready' ? 200 : 404).end();
   }
-  if (url.pathname.startsWith('/api/')) {
-    const upstream = proxyRequest(`${process.env.API_ORIGIN}${req.url}`, { method: req.method, headers: { ...req.headers, connection: 'close' }, agent: false }, incoming => {
-      res.writeHead(incoming.statusCode, incoming.headers);
-      incoming.pipe(res);
-    });
-    upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
-    req.pipe(upstream);
-    return;
-  }
-  if (url.pathname === '/__ready') return res.writeHead(200).end('ready');
-  const root = resolve(process.env.STATIC_ROOT || 'public');
-  const path = resolve(root, `.${url.pathname}`);
-  if (path !== root && !path.startsWith(`${root}/`)) return res.writeHead(403).end();
-  try {
-    const file = extname(path) ? path : `${path}/index.html`;
-    const data = await readFile(file);
-    res.writeHead(200, { 'Content-Type': ({ '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript' })[extname(file)] || 'application/octet-stream' }).end(data);
-  } catch { res.writeHead(404).end(); }
+  return res.writeHead(404).end();
 });
 server.listen(Number(process.env.PORT), '127.0.0.1');
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { server.closeAllConnections(); server.close(); });

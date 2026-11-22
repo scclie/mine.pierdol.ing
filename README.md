@@ -1,6 +1,9 @@
 # # mine.pierdol.ing core
 
-fully open-source minecraft platform
+fully open-source minecraft servers platform
+this repository contains the core and api
+
+web frontend - [mine.pierdol.ing-frontend](https://git.sccl.cc/scclie/mine.pierdol.ing-frontend)
 
 ## ## custom plugins:
 - [pierdol-auth](https://git.sccl.cc/scclie/pierdol-auth-paper) - licensed/cracked login system
