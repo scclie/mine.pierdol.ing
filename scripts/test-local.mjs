@@ -71,6 +71,10 @@ export async function localRun(label, run) {
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PG'))),
     TMPDIR: `${directory}/secrets`, PGHOST: directory, PGUSER: 'postgres', PGDATABASE: 'postgres', PGPORT: '5432',
     DATABASE_URL: '', TEST_DATABASE_URL: '', PGPASSFILE: `${directory}/secrets/pgpass`, PGSERVICEFILE: '/dev/null',
+    ONE_ISLAND_STATUS_ADDRESS: '172.30.13.1',
+    ONE_ISLAND_STATUS_PORT: '25565',
+    ONE_ISLAND_WIPE_UNIX_SECONDS: '1795780800',
+    ONE_ISLAND_GATUS_UPTIME_URL: 'https://status.sccl.cc/api/v1/endpoints/games_mine-skyblock-server/uptimes/7d',
     TASK12_GROUP_REGISTRIES: JSON.stringify(registries) };
   function start(command, args, extra = {}, log) {
     const operation = (async () => {

@@ -123,6 +123,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     health_module.addImport("http_server", http_server_module);
+    const public_servers_module = b.createModule(.{
+        .root_source_file = b.path("src/routes/public_servers.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    public_servers_module.addImport("http_server", http_server_module);
+    public_servers_module.addImport("db_pool", pool_module);
+    public_servers_module.addImport("config", config_module);
+    public_servers_module.addImport("mojang_build", mojang_build_module);
     const discord_module = b.createModule(.{
         .root_source_file = b.path("src/services/discord.zig"),
         .target = target,
@@ -200,6 +209,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("auth_routes", auth_routes_module);
     exe.root_module.addImport("game_auth_routes", game_auth_routes_module);
     exe.root_module.addImport("health", health_module);
+    exe.root_module.addImport("public_servers", public_servers_module);
     exe.root_module.addImport("runtime", runtime_module);
     exe.root_module.addImport("mojang", mojang_module);
     exe.root_module.addImport("mojang_transport", mojang_transport_module);

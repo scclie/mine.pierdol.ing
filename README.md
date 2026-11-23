@@ -1,6 +1,18 @@
 # # mine.pierdol.ing core
 
+[![health](https://status.sccl.cc/api/v1/endpoints/games_mine-pierdol-ing-core/health/badge.svg)](https://status.sccl.cc/endpoints/games_mine-pierdol-ing-core)
+[![uptime 24h](https://status.sccl.cc/api/v1/endpoints/games_mine-pierdol-ing-core/uptimes/24h/badge.svg)](https://status.sccl.cc/endpoints/games_mine-pierdol-ing-core)
+[![uptime 7d](https://status.sccl.cc/api/v1/endpoints/games_mine-pierdol-ing-core/uptimes/7d/badge.svg)](https://status.sccl.cc/endpoints/games_mine-pierdol-ing-core)
+: core
+
+[![skyblock health](https://status.sccl.cc/api/v1/endpoints/games_mine-skyblock-server/health/badge.svg)](https://status.sccl.cc/endpoints/games_mine-skyblock-server)
+[![uptime 24h](https://status.sccl.cc/api/v1/endpoints/games_mine-skyblock-server/uptimes/24h/badge.svg)](https://status.sccl.cc/endpoints/games_mine-skyblock-server)
+[![uptime 7d](https://status.sccl.cc/api/v1/endpoints/games_mine-skyblock-server/uptimes/7d/badge.svg)](https://status.sccl.cc/endpoints/games_mine-skyblock-server)
+: skyblock server
+
+
 fully open-source minecraft servers platform
+
 this repository contains the core and api
 
 web frontend - [mine.pierdol.ing-frontend](https://git.sccl.cc/scclie/mine.pierdol.ing-frontend)

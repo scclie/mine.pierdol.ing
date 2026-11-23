@@ -13,6 +13,10 @@ pub const Config = struct {
     administrator_discord_ids: std.AutoHashMap(u64, void),
     moderator_discord_ids: std.AutoHashMap(u64, void),
     development_mode: bool,
+    one_island_status_address: []u8,
+    one_island_status_port: u16,
+    one_island_wipe_unix_seconds: i64,
+    one_island_gatus_uptime_url: []u8,
 
     pub fn load(allocator: std.mem.Allocator) !Config {
         const database_url = try duplicateRequired(allocator, "DATABASE_URL", error.InvalidDatabaseUrl);
@@ -30,6 +34,22 @@ pub const Config = struct {
         const session_signing_key = try duplicateRequired(allocator, "SESSION_SIGNING_KEY", error.InvalidSessionSigningKey);
         errdefer wipeFree(allocator, session_signing_key);
         if (session_signing_key.len < 32) return error.InvalidSessionSigningKey;
+        const one_island_status_address = try duplicateRequired(allocator, "ONE_ISLAND_STATUS_ADDRESS", error.InvalidOneIslandAddress);
+        errdefer allocator.free(one_island_status_address);
+        const raw_port = environmentValue("ONE_ISLAND_STATUS_PORT") orelse return error.InvalidOneIslandPort;
+        if (raw_port.len == 0) return error.InvalidOneIslandPort;
+        for (raw_port) |byte| if (!std.ascii.isDigit(byte)) return error.InvalidOneIslandPort;
+        const one_island_status_port = std.fmt.parseInt(u16, raw_port, 10) catch return error.InvalidOneIslandPort;
+        if (one_island_status_port == 0) return error.InvalidOneIslandPort;
+        _ = std.net.Address.parseIp(one_island_status_address, one_island_status_port) catch return error.InvalidOneIslandAddress;
+        const raw_wipe = environmentValue("ONE_ISLAND_WIPE_UNIX_SECONDS") orelse return error.InvalidOneIslandWipe;
+        if (raw_wipe.len == 0) return error.InvalidOneIslandWipe;
+        for (raw_wipe) |byte| if (!std.ascii.isDigit(byte)) return error.InvalidOneIslandWipe;
+        const one_island_wipe_unix_seconds = std.fmt.parseInt(i64, raw_wipe, 10) catch return error.InvalidOneIslandWipe;
+        const one_island_gatus_uptime_url = try duplicateRequired(allocator, "ONE_ISLAND_GATUS_UPTIME_URL", error.InvalidOneIslandUptimeUrl);
+        errdefer allocator.free(one_island_gatus_uptime_url);
+        // This is an operator-supplied fixed source, never a request-selected URL.
+        if (!std.mem.eql(u8, one_island_gatus_uptime_url, "https://status.sccl.cc/api/v1/endpoints/games_mine-skyblock-server/uptimes/7d")) return error.InvalidOneIslandUptimeUrl;
         const game_auth_credentials: []GameAuthCredential = if (environmentValue("GAME_AUTH_SERVER_CREDENTIALS")) |value|
             try parseGameAuthCredentials(allocator, try allocator.dupe(u8, value))
         else
@@ -66,10 +86,16 @@ pub const Config = struct {
             .administrator_discord_ids = administrator_discord_ids,
             .moderator_discord_ids = moderator_discord_ids,
             .development_mode = development_mode,
+            .one_island_status_address = one_island_status_address,
+            .one_island_status_port = one_island_status_port,
+            .one_island_wipe_unix_seconds = one_island_wipe_unix_seconds,
+            .one_island_gatus_uptime_url = one_island_gatus_uptime_url,
         };
     }
 
     pub fn deinit(self: *Config) void {
+        self.allocator.free(self.one_island_status_address);
+        self.allocator.free(self.one_island_gatus_uptime_url);
         wipeFree(self.allocator, self.database_url);
         self.allocator.free(self.http_listen_address);
         self.allocator.free(self.public_origin);

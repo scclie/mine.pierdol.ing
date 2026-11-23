@@ -7,6 +7,7 @@ const http = @import("http_server");
 const discord = @import("discord");
 const auth_routes = @import("auth_routes");
 const health = @import("health");
+const public_servers = @import("public_servers");
 const game_auth_routes = @import("game_auth_routes");
 const runtime = @import("runtime");
 const mojang = @import("mojang");
@@ -45,6 +46,8 @@ pub fn main() !void {
     var server = http.Server.init(std.heap.page_allocator);
     defer server.deinit();
     try health.register(&server);
+    var public_provider = public_servers.Provider.init(std.heap.page_allocator, &pool, &configuration);
+    try public_servers.register(&server, &public_provider);
     try auth_routes.register(&server, &auth_router);
     if (configuration.game_auth_credentials.len > 0) {
         var game_auth_router = game_auth_routes.Router.init(std.heap.page_allocator, &pool, &configuration);
