@@ -83,9 +83,10 @@ pub const GameAuthService = struct {
             .continue_session => |*allowed| {
                 defer std.crypto.utils.secureZero(u8, &allowed.lease.token);
                 defer allowed.identity.deinit(self.allocator);
+                if (allowed.identity.user_id <= 0) return error.InvalidUserId;
                 try self.repository.audit(server_id, allowed.identity.user_id, "continue", "lease_valid");
                 const version = try self.repository.whitelistVersion();
-                return stringify(self.allocator, .{ .outcome = "continue", .uuid = allowed.identity.uuid, .lease = @as([]const u8, &allowed.lease.token), .expires_at = allowed.lease.expires_at, .whitelist_version = version });
+                return stringify(self.allocator, .{ .outcome = "continue", .uuid = allowed.identity.uuid, .lease = @as([]const u8, &allowed.lease.token), .expires_at = allowed.lease.expires_at, .whitelist_version = version, .user_id = allowed.identity.user_id });
             },
         }
     }
@@ -95,11 +96,12 @@ pub const GameAuthService = struct {
             .deny => return self.deny(server_id, reason_category),
             .allow => |*identity| {
                 defer identity.deinit(self.allocator);
+                if (identity.user_id <= 0) return error.InvalidUserId;
                 var lease = (try self.repository.issueLease(server_id, identity.*)) orelse return self.deny(server_id, reason_category);
                 defer std.crypto.utils.secureZero(u8, &lease.token);
                 try self.repository.audit(server_id, identity.user_id, "allow", reason_category);
                 const version = try self.repository.whitelistVersion();
-                return stringify(self.allocator, .{ .outcome = "allow", .uuid = identity.uuid, .lease = @as([]const u8, &lease.token), .expires_at = lease.expires_at, .whitelist_version = version });
+                return stringify(self.allocator, .{ .outcome = "allow", .uuid = identity.uuid, .lease = @as([]const u8, &lease.token), .expires_at = lease.expires_at, .whitelist_version = version, .user_id = identity.user_id });
             },
         }
     }

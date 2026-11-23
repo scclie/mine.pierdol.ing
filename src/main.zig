@@ -9,6 +9,7 @@ const auth_routes = @import("auth_routes");
 const health = @import("health");
 const public_servers = @import("public_servers");
 const game_auth_routes = @import("game_auth_routes");
+const active_minutes = @import("active_minutes");
 const runtime = @import("runtime");
 const mojang = @import("mojang");
 const mojang_transport = @import("mojang_transport");
@@ -53,6 +54,8 @@ pub fn main() !void {
         var game_auth_router = game_auth_routes.Router.init(std.heap.page_allocator, &pool, &configuration);
         defer game_auth_router.deinit();
         try runtime.registerGameAuth(&server, &game_auth_router);
+        var active_minutes_router = active_minutes.Router.init(std.heap.page_allocator, &pool);
+        try active_minutes.register(&server, &active_minutes_router);
         try server.serve(configuration.http_listen_address);
     } else try server.serve(configuration.http_listen_address);
 }

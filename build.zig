@@ -101,6 +101,19 @@ pub fn build(b: *std.Build) void {
     game_auth_service_module.addImport("db_pool", pool_module);
     game_auth_service_module.addImport("domain", domain_module);
     game_auth_service_module.addImport("game_auth_repository", game_auth_repository_module);
+    const playtime_repository_module = b.createModule(.{
+        .root_source_file = b.path("src/db/playtime.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    playtime_repository_module.addImport("db_pool", pool_module);
+    const playtime_service_module = b.createModule(.{
+        .root_source_file = b.path("src/services/playtime.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    playtime_service_module.addImport("db_pool", pool_module);
+    playtime_service_module.addImport("playtime_repository", playtime_repository_module);
     const game_auth_routes_module = b.createModule(.{
         .root_source_file = b.path("src/routes/game_auth.zig"),
         .target = target,
@@ -110,6 +123,14 @@ pub fn build(b: *std.Build) void {
     game_auth_routes_module.addImport("db_pool", pool_module);
     game_auth_routes_module.addImport("game_auth_service", game_auth_service_module);
     game_auth_routes_module.addImport("http_server", http_server_module);
+    const active_minutes_module = b.createModule(.{
+        .root_source_file = b.path("src/routes/active_minutes.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    active_minutes_module.addImport("db_pool", pool_module);
+    active_minutes_module.addImport("http_server", http_server_module);
+    active_minutes_module.addImport("playtime_service", playtime_service_module);
     const runtime_module = b.createModule(.{
         .root_source_file = b.path("src/runtime.zig"),
         .target = target,
@@ -208,6 +229,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("discord", discord_module);
     exe.root_module.addImport("auth_routes", auth_routes_module);
     exe.root_module.addImport("game_auth_routes", game_auth_routes_module);
+    exe.root_module.addImport("active_minutes", active_minutes_module);
     exe.root_module.addImport("health", health_module);
     exe.root_module.addImport("public_servers", public_servers_module);
     exe.root_module.addImport("runtime", runtime_module);

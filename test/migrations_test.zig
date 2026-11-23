@@ -93,7 +93,7 @@ test "migrations_test lifecycle upgrade" {
     try expectSql(pool, "SELECT oid=(SELECT oid FROM legacy_constraint) FROM pg_constraint WHERE conname='game_identities_licensed_mojang_uuid_key'", "t");
     try expectSql(pool, "SELECT version=(SELECT version FROM legacy_cursor) FROM game_auth_whitelist_state", "t");
     try migrations.apply(pool);
-    try expectSql(pool, "SELECT count(*) FROM schema_migrations", "3");
+    try expectSql(pool, "SELECT count(*) FROM schema_migrations", "4");
     try expectSql(pool, "SELECT count(*) FROM schema_migrations WHERE version='003_licensed_uuid_lifecycle'", "1");
     try expectSql(pool, "SELECT bool_and(application_revision=1) FROM users", "t");
 }

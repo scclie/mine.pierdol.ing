@@ -215,6 +215,8 @@ pub const Server = struct {
         self.admitInternal(request.authenticated_server_id.?) catch |err| return .{ .result = try internalResponse(self.allocator, if (err == error.RateLimited) 429 else 500), .close = true };
         if (request.unsupported_framing) return .{ .result = try internalResponse(self.allocator, 400), .close = true };
         const length = request.content_length orelse 0;
+        if (length > Limits.body_bytes and isActiveMinutes(request.target))
+            return .{ .result = try internalResponse(self.allocator, 413), .close = true };
         if (length > Limits.body_bytes or (request.method == .POST and (!request_safety.isJsonContentType(request.content_type) or request.content_length == null)))
             return .{ .result = try internalResponse(self.allocator, 400), .close = true };
         if (request.method != .POST and length != 0) return .{ .result = try internalResponse(self.allocator, 400), .close = true };
@@ -234,7 +236,7 @@ pub const Server = struct {
         request.body = body[0..count];
         const result = self.dispatchAdmitted(request, true) catch return .{ .result = try internalResponse(self.allocator, 500), .consumed = consumed, .close = true };
         // Even errors own a no-store JSON response. Wipe body before returning.
-        return .{ .result = result, .consumed = consumed, .close = result.status != 200 };
+        return .{ .result = result, .consumed = consumed, .close = result.status != 200 and result.status != 204 };
     }
 
     pub fn setInternalAuthentication(self: *Server, context: *anyopaque, check: *const fn (*anyopaque, ?[]const u8) ?[]const u8) void {
@@ -251,7 +253,13 @@ pub const Server = struct {
     }
 
     fn handlesInternal(self: *const Server, target: []const u8) bool {
-        return self.internal_auth != null and isInternal(target);
+        if (!isInternal(target)) return false;
+        if (self.internal_auth != null) return true;
+        // registered private routes must fail closed without a verifier.
+        for (self.routes.items) |registered_route| {
+            if (isInternal(registered_route.path)) return true;
+        }
+        return false;
     }
 
     pub fn authenticateHead(self: *Server, request: *Request) bool {
@@ -303,6 +311,7 @@ pub const Server = struct {
             route_exists = true;
             if (registered_route.method != request.method) continue;
             if (registered_route.expects_json) {
+                if (internal and isActiveMinutes(request.target) and (request.body.len > Limits.body_bytes or (request.content_length orelse request.body.len) > Limits.body_bytes)) return internalResponse(self.allocator, 413);
                 if (internal and (!request_safety.isJsonContentType(request.content_type) or request.body.len > Limits.body_bytes or (request.content_length orelse request.body.len) > Limits.body_bytes)) return internalResponse(self.allocator, 400);
                 const actual_length: ?u64 = if (request.content_length) |length| @max(length, request.body.len) else null;
                 request_safety.validateJsonBody(request.content_type, actual_length) catch |err| {
@@ -541,6 +550,11 @@ fn matchesPath(pattern: []const u8, path: []const u8) bool {
         } else if (!std.mem.eql(u8, segment, value)) return false;
     }
     return actual.next() == null;
+}
+
+fn isActiveMinutes(target: []const u8) bool {
+    const path = target[0 .. std.mem.indexOfScalar(u8, target, '?') orelse target.len];
+    return std.mem.eql(u8, path, "/internal/game-auth/v1/active-minutes");
 }
 
 fn parseListenAddress(value: []const u8) !std.net.Address {

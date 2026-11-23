@@ -20,6 +20,7 @@ web frontend - [mine.pierdol.ing-frontend](https://git.sccl.cc/scclie/mine.pierd
 ## ## custom plugins:
 - [pierdol-auth](https://git.sccl.cc/scclie/pierdol-auth-paper) - licensed/cracked login system
 - [pierdol-chat](https://git.sccl.cc/scclie/pierdol-chat-paper) - local/global chat system
+- [pierdol-playtime](https://git.sccl.cc/scclie/pierdol-playtime-paper) - afk indicator && playtime counter
 
 ## ## server configuration:
 - minecraft config - [sccl_nix/nixos/modules/server/minecraft.nix](https://git.sccl.cc/scclie/sccl_nix/src/branch/main/nixos/modules/server/minecraft.nix)
