@@ -15,6 +15,8 @@ pub const Provider = struct {
     online: ?u32 = null,
     uptime: ?f64 = null,
     approved: ?u64 = null,
+    discord_refreshed: ?std.time.Instant = null,
+    discord: DiscordCounts = .{},
 
     pub fn init(allocator: std.mem.Allocator, pool: *db.Pool, configuration: *const config.Config) Provider {
         return .{ .allocator = allocator, .pool = pool, .configuration = configuration };
@@ -44,6 +46,16 @@ pub const Provider = struct {
         for (value) |byte| if (!std.ascii.isDigit(byte)) return error.InvalidCount;
         return std.fmt.parseInt(u64, value, 10);
     }
+
+    fn refreshDiscord(self: *Provider) void {
+        const now = std.time.Instant.now() catch return;
+        if (self.discord_refreshed) |previous| {
+            if (now.since(previous) < 3600 * std.time.ns_per_s) return;
+        }
+        // Cache failures too, independently of the other statistics sources.
+        self.discord_refreshed = now;
+        self.discord = fetchDiscord(self.allocator, self.configuration.one_island_discord_invite_url) catch .{};
+    }
 };
 
 pub fn register(server: *http.Server, provider: *Provider) !void {
@@ -53,6 +65,7 @@ pub fn register(server: *http.Server, provider: *Provider) !void {
 fn handle(context: *anyopaque, _: http.Request, _: []const u8) !http.response.Response {
     const provider: *Provider = @ptrCast(@alignCast(context));
     provider.refresh();
+    provider.refreshDiscord();
     const elapsed = @as(i128, std.time.timestamp()) - @as(i128, provider.configuration.one_island_wipe_unix_seconds);
     const payload = .{ .servers = .{
         .{
@@ -64,6 +77,7 @@ fn handle(context: *anyopaque, _: http.Request, _: []const u8) !http.response.Re
                 .approved_applications = provider.approved,
                 .wipe_elapsed_seconds = elapsed,
                 .uptime_url = "https://status.sccl.cc/endpoints/games_mine-skyblock-server",
+                .discord = provider.discord,
             },
         },
         .{ .id = "draumur1", .status = "planned", .online = @as(?u32, null) },
@@ -206,6 +220,69 @@ const UptimeBody = struct {
 
 fn curlCheck(code: c.CURLcode) !void {
     if (code != c.CURLE_OK) return error.UptimeUnavailable;
+}
+
+const DiscordCounts = struct {
+    online: ?u64 = null,
+    members: ?u64 = null,
+};
+
+const DiscordBody = struct {
+    bytes: [65536]u8 = undefined,
+    len: usize = 0,
+
+    fn write(ptr: [*c]u8, size: usize, count: usize, context: ?*anyopaque) callconv(.C) usize {
+        const self: *DiscordBody = @ptrCast(@alignCast(context orelse return 0));
+        const length = std.math.mul(usize, size, count) catch return 0;
+        if (length > self.bytes.len - self.len or (length != 0 and ptr == null)) return 0;
+        if (length != 0) @memcpy(self.bytes[self.len..][0..length], ptr[0..length]);
+        self.len += length;
+        return length;
+    }
+};
+
+fn discordCount(value: std.json.Value) !u64 {
+    if (value != .integer) return error.InvalidDiscordCount;
+    if (value.integer < 0 or value.integer > 9007199254740991) return error.InvalidDiscordCount;
+    return @intCast(value.integer);
+}
+
+fn fetchDiscord(allocator: std.mem.Allocator, url: []const u8) !DiscordCounts {
+    const easy = c.curl_easy_init() orelse return error.DiscordUnavailable;
+    defer c.curl_easy_cleanup(easy);
+    const endpoint = try allocator.dupeZ(u8, url);
+    defer allocator.free(endpoint);
+    try curlCheck(c.curl_easy_setopt(easy, c.CURLOPT_URL, endpoint.ptr));
+    inline for (.{
+        .{ c.CURLOPT_PROTOCOLS_STR, "https" },
+        .{ c.CURLOPT_PROXY, "" },
+        .{ c.CURLOPT_NOPROXY, "*" },
+        .{ c.CURLOPT_CAINFO, build.ca_bundle ++ "\x00" },
+        .{ c.CURLOPT_CAPATH, "" },
+    }) |option| try curlCheck(c.curl_easy_setopt(easy, option[0], @as([*:0]const u8, option[1])));
+    inline for (.{
+        .{ c.CURLOPT_TIMEOUT_MS, 2000 },
+        .{ c.CURLOPT_CONNECTTIMEOUT_MS, 1500 },
+        .{ c.CURLOPT_NOSIGNAL, 1 },
+        .{ c.CURLOPT_FOLLOWLOCATION, 0 },
+        .{ c.CURLOPT_SSL_VERIFYPEER, 1 },
+        .{ c.CURLOPT_SSL_VERIFYHOST, 2 },
+        .{ c.CURLOPT_NETRC, c.CURL_NETRC_IGNORED },
+    }) |option| try curlCheck(c.curl_easy_setopt(easy, option[0], @as(c_long, option[1])));
+    var body = DiscordBody{};
+    try curlCheck(c.curl_easy_setopt(easy, c.CURLOPT_WRITEFUNCTION, @as(*const fn ([*c]u8, usize, usize, ?*anyopaque) callconv(.C) usize, DiscordBody.write)));
+    try curlCheck(c.curl_easy_setopt(easy, c.CURLOPT_WRITEDATA, @as(*anyopaque, @ptrCast(&body))));
+    try curlCheck(c.curl_easy_perform(easy));
+    var status: c_long = 0;
+    try curlCheck(c.curl_easy_getinfo(easy, c.CURLINFO_RESPONSE_CODE, &status));
+    if (status != 200) return error.DiscordUnavailable;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body.bytes[0..body.len], .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidDiscordCounts;
+    return .{
+        .online = try discordCount(parsed.value.object.get("approximate_presence_count") orelse return error.InvalidDiscordCounts),
+        .members = try discordCount(parsed.value.object.get("approximate_member_count") orelse return error.InvalidDiscordCounts),
+    };
 }
 
 fn fetchUptime(allocator: std.mem.Allocator, url: []const u8) !f64 {

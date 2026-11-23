@@ -17,6 +17,7 @@ pub const Config = struct {
     one_island_status_port: u16,
     one_island_wipe_unix_seconds: i64,
     one_island_gatus_uptime_url: []u8,
+    one_island_discord_invite_url: []u8,
 
     pub fn load(allocator: std.mem.Allocator) !Config {
         const database_url = try duplicateRequired(allocator, "DATABASE_URL", error.InvalidDatabaseUrl);
@@ -50,6 +51,9 @@ pub const Config = struct {
         errdefer allocator.free(one_island_gatus_uptime_url);
         // This is an operator-supplied fixed source, never a request-selected URL.
         if (!std.mem.eql(u8, one_island_gatus_uptime_url, "https://status.sccl.cc/api/v1/endpoints/games_mine-skyblock-server/uptimes/7d")) return error.InvalidOneIslandUptimeUrl;
+        const one_island_discord_invite_url = try duplicateRequired(allocator, "ONE_ISLAND_DISCORD_INVITE_URL", error.InvalidOneIslandDiscordUrl);
+        errdefer allocator.free(one_island_discord_invite_url);
+        if (!std.mem.eql(u8, one_island_discord_invite_url, "https://discord.com/api/v10/invites/MNXnGGG3zt?with_counts=true")) return error.InvalidOneIslandDiscordUrl;
         const game_auth_credentials: []GameAuthCredential = if (environmentValue("GAME_AUTH_SERVER_CREDENTIALS")) |value|
             try parseGameAuthCredentials(allocator, try allocator.dupe(u8, value))
         else
@@ -90,12 +94,14 @@ pub const Config = struct {
             .one_island_status_port = one_island_status_port,
             .one_island_wipe_unix_seconds = one_island_wipe_unix_seconds,
             .one_island_gatus_uptime_url = one_island_gatus_uptime_url,
+            .one_island_discord_invite_url = one_island_discord_invite_url,
         };
     }
 
     pub fn deinit(self: *Config) void {
         self.allocator.free(self.one_island_status_address);
         self.allocator.free(self.one_island_gatus_uptime_url);
+        self.allocator.free(self.one_island_discord_invite_url);
         wipeFree(self.allocator, self.database_url);
         self.allocator.free(self.http_listen_address);
         self.allocator.free(self.public_origin);

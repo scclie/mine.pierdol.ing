@@ -75,6 +75,7 @@ export async function localRun(label, run) {
     ONE_ISLAND_STATUS_PORT: '25565',
     ONE_ISLAND_WIPE_UNIX_SECONDS: '1795780800',
     ONE_ISLAND_GATUS_UPTIME_URL: 'https://status.sccl.cc/api/v1/endpoints/games_mine-skyblock-server/uptimes/7d',
+    ONE_ISLAND_DISCORD_INVITE_URL: 'https://discord.com/api/v10/invites/MNXnGGG3zt?with_counts=true',
     TASK12_GROUP_REGISTRIES: JSON.stringify(registries) };
   function start(command, args, extra = {}, log) {
     const operation = (async () => {
