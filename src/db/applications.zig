@@ -260,12 +260,12 @@ pub const ApplicationRepository = struct {
         return decodeAdmissionSnapshot(&result);
     }
 
-    /// only expose public account data.
+    /// account holder's profile data; not for public or admin responses.
     pub fn account(self: *ApplicationRepository, user_id: i64) !db.Result {
         var buffer: [20]u8 = undefined;
         const id = try std.fmt.bufPrint(&buffer, "{d}", .{user_id});
         return self.pool.query(
-            "SELECT users.id, users.discord_id, COALESCE(users.discord_global_name, users.discord_username), applications.minecraft_nickname, applications.client_type, applications.status, applications.decision_reason, applications.decision_reason IS NULL, NOT EXISTS (SELECT 1 FROM password_credentials WHERE user_id = users.id), users.discord_username FROM users LEFT JOIN applications ON applications.user_id = users.id WHERE users.id = $1",
+            "SELECT users.id, users.discord_id, COALESCE(users.discord_global_name, users.discord_username), applications.minecraft_nickname, applications.client_type, applications.status, applications.decision_reason, applications.decision_reason IS NULL, NOT EXISTS (SELECT 1 FROM password_credentials WHERE user_id = users.id), users.discord_username, users.active_seconds / 60 FROM users LEFT JOIN applications ON applications.user_id = users.id WHERE users.id = $1",
             &.{id},
         );
     }

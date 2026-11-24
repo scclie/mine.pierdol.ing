@@ -281,7 +281,8 @@ const Fixture = struct {
         const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, result.body, .{});
         defer parsed.deinit();
         const object = parsed.value.object;
-        try std.testing.expectEqual(@as(usize, 4), object.count());
+        try std.testing.expectEqual(@as(usize, 5), object.count());
+        try std.testing.expectEqual(@as(i64, 0), object.get("active_minutes").?.integer);
         const user = object.get("user").?.object;
         try std.testing.expectEqual(@as(usize, 5), user.count());
         try std.testing.expectEqual(@as(i64, 1), user.get("id").?.integer);

@@ -35,7 +35,7 @@ pub const ApplicationService = struct {
         self.deny_list.deinit();
     }
 
-    pub fn account(self: *ApplicationService, actor: auth.AuthenticatedActor, session_token: []const u8) ![]u8 {
+    pub fn account(self: *ApplicationService, actor: auth.AuthenticatedActor, session_token: []const u8, include_playtime: bool) ![]u8 {
         var result = try self.repository.account(actor.user_id);
         defer result.deinit();
         if (result.rowCount() != 1) return error.SessionNotFound;
@@ -69,6 +69,11 @@ pub const ApplicationService = struct {
             },
             .csrf_token = @as([]const u8, &token),
         };
+        if (include_playtime) {
+            const active_minutes = try std.fmt.parseInt(i64, result.value(0, 10), 10);
+            if (status == .approved and client_type == .cracked and std.mem.eql(u8, result.value(0, 8), "t")) return std.json.stringifyAlloc(self.allocator, .{ .user = payload.user, .application = payload.application, .actions = payload.actions, .csrf_token = payload.csrf_token, .active_minutes = active_minutes, .password_setup_required = true }, .{});
+            return std.json.stringifyAlloc(self.allocator, .{ .user = payload.user, .application = payload.application, .actions = payload.actions, .csrf_token = payload.csrf_token, .active_minutes = active_minutes }, .{});
+        }
         if (status == .approved and client_type == .cracked and std.mem.eql(u8, result.value(0, 8), "t")) return std.json.stringifyAlloc(self.allocator, .{ .user = payload.user, .application = payload.application, .actions = payload.actions, .csrf_token = payload.csrf_token, .password_setup_required = true }, .{});
         return std.json.stringifyAlloc(self.allocator, payload, .{});
     }

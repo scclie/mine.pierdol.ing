@@ -47,7 +47,7 @@ fn dispatch(router: *Router, request: http.Request) !response.Response {
         try router.application_service.mutate(&router.auth_service, actor, authentication, mutation, request.body);
         if (mutation == .password) return response.Response.init(router.allocator, 204, "");
     }
-    const body = try router.application_service.account(actor, authentication.session_token);
+    const body = try router.application_service.account(actor, authentication.session_token, request.method == .GET);
     defer {
         std.crypto.utils.secureZero(u8, body);
         router.allocator.free(body);
