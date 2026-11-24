@@ -8,6 +8,7 @@ const discord = @import("discord");
 const auth_routes = @import("auth_routes");
 const health = @import("health");
 const public_servers = @import("public_servers");
+const public_ranking = @import("public_ranking");
 const game_auth_routes = @import("game_auth_routes");
 const active_minutes = @import("active_minutes");
 const runtime = @import("runtime");
@@ -44,11 +45,14 @@ pub fn main() !void {
     var discord_service = discord.DiscordService.initProduction(std.heap.page_allocator, &pool, &configuration);
     var auth_router = try auth_routes.Router.init(std.heap.page_allocator, &discord_service, &configuration, &resolver);
     defer auth_router.deinit();
+    var ranking_provider = try public_ranking.Provider.init(std.heap.page_allocator, &pool);
+    defer ranking_provider.deinit();
     var server = http.Server.init(std.heap.page_allocator);
     defer server.deinit();
     try health.register(&server);
     var public_provider = public_servers.Provider.init(std.heap.page_allocator, &pool, &configuration);
     try public_servers.register(&server, &public_provider);
+    try public_ranking.register(&server, &ranking_provider);
     try auth_routes.register(&server, &auth_router);
     if (configuration.game_auth_credentials.len > 0) {
         var game_auth_router = game_auth_routes.Router.init(std.heap.page_allocator, &pool, &configuration);

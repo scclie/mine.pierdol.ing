@@ -304,6 +304,20 @@ pub const Server = struct {
         var request_id: [32]u8 = undefined;
         encodeHex(&request_id_bytes, &request_id);
 
+        // fragments are not valid HTTP wire targets
+        if (std.mem.indexOfScalar(u8, request.target, '#') != null) {
+            const target_path = request.target[0 .. std.mem.indexOfAny(u8, request.target, "?#") orelse request.target.len];
+            const message = if (std.mem.eql(u8, target_path, "/api/v1/public/ranking")) "Invalid ranking query" else "Invalid request target";
+            var rejected = if (internal)
+                try internalResponse(self.allocator, 400)
+            else
+                try errors.errorResponse(self.allocator, 400, "invalid_query", message, &request_id);
+            errdefer rejected.deinit();
+            if (!internal) try rejected.addHeader("Cache-Control", "no-store");
+            try rejected.addHeader("X-Request-ID", &request_id);
+            return rejected;
+        }
+
         const path = request.target[0 .. std.mem.indexOfScalar(u8, request.target, '?') orelse request.target.len];
         var route_exists = false;
         for (self.routes.items) |registered_route| {

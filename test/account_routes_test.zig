@@ -12,6 +12,219 @@ const auth_routes = @import("auth_routes");
 const domain = @import("domain");
 const mojang = @import("mojang");
 const fake_mojang = @import("fake_mojang");
+const public_ranking = @import("public_ranking");
+const ranking_repository = @import("ranking_repository");
+
+test "public ranking DB-free numeric domain and fragment messages" {
+    const maximum = ranking_repository.max_active_minutes;
+    try std.testing.expectEqual(@as(u64, 0), try ranking_repository.publicMinutes(0));
+    try std.testing.expectEqual(maximum, try ranking_repository.publicMinutes(@intCast(maximum * 60)));
+    try std.testing.expectEqual(maximum, try ranking_repository.publicMinutes(@intCast(maximum * 60 + 59)));
+    try std.testing.expectError(error.RankingMinutesOutOfRange, ranking_repository.publicMinutes(@intCast((maximum + 1) * 60)));
+    try std.testing.expectError(error.InvalidRankingSeconds, ranking_repository.publicMinutes(-1));
+
+    const Sentinel = struct {
+        fn handle(context: *anyopaque, _: http.Request, _: []const u8) !http.response.Response {
+            const calls: *usize = @ptrCast(@alignCast(context));
+            calls.* += 1;
+            return http.response.Response.init(std.testing.allocator, 200, "valid");
+        }
+    };
+    var calls: usize = 0;
+    var server = http.Server.init(std.testing.allocator);
+    defer server.deinit();
+    try server.route(.GET, "/api/v1/public/ranking", &calls, Sentinel.handle);
+    for ([_][]const u8{ "/api/v1/public/ranking#x", "/api/v1/public/ranking?page=1#x", "/api/v1/account#x", "/api/v1/public/ranking-extra#x" }, 0..) |target, i| {
+        var result = try server.dispatch(.{ .method = .GET, .target = target });
+        defer result.deinit();
+        try expectError(&result, 400, "invalid_query");
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, result.body, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(if (i < 2) "Invalid ranking query" else "Invalid request target", parsed.value.object.get("error").?.object.get("message").?.string);
+        try std.testing.expectEqualStrings("no-store", result.header("Cache-Control").?);
+        try std.testing.expect(result.header("X-Request-ID") != null);
+        try std.testing.expectEqual(@as(usize, 0), calls);
+    }
+    var valid = try server.dispatch(.{ .method = .GET, .target = "/api/v1/public/ranking?page=1" });
+    defer valid.deinit();
+    try std.testing.expectEqual(@as(u16, 200), valid.status);
+    try std.testing.expectEqual(@as(usize, 1), calls);
+}
+
+test "public ranking strict query and monotonic TTL boundaries" {
+    for ([_][]const u8{ "", "?", "?page=0001" }) |suffix| {
+        const target = try std.fmt.allocPrint(std.testing.allocator, "/api/v1/public/ranking{s}", .{suffix});
+        defer std.testing.allocator.free(target);
+        try std.testing.expectEqual(@as(u64, 1), try public_ranking.parsePage(target));
+    }
+    try std.testing.expectEqual(std.math.maxInt(u64), try public_ranking.parsePage("/api/v1/public/ranking?page=18446744073709551615"));
+    for ([_][]const u8{ "?page=0", "?page=-1", "?page=1.5", "?page=", "?page=18446744073709551616", "?page=1&page=2", "?page=1&", "?&", "?limit=50", "?page_size=50", "?unknown=1", "?%70age=1", "?page=%31", "#x", "?page=1#x" }) |suffix| {
+        const target = try std.fmt.allocPrint(std.testing.allocator, "/api/v1/public/ranking{s}", .{suffix});
+        defer std.testing.allocator.free(target);
+        try std.testing.expectError(error.InvalidQuery, public_ranking.parsePage(target));
+    }
+    const second = std.time.ns_per_s;
+    try std.testing.expect(public_ranking.isFresh(0));
+    try std.testing.expect(public_ranking.isFresh(299 * second));
+    try std.testing.expect(!public_ranking.isFresh(300 * second));
+    try std.testing.expectEqual(@as(u64, 300), public_ranking.remainingTtl(0));
+    try std.testing.expectEqual(@as(u64, 1), public_ranking.remainingTtl(299 * second));
+    try std.testing.expectEqual(@as(u64, 0), public_ranking.remainingTtl(299 * second + second / 2));
+    try std.testing.expectEqual(@as(u64, 0), public_ranking.remainingTtl(300 * second));
+}
+
+const RankingFixture = struct {
+    database: postgres.TestDatabase,
+    provider: public_ranking.Provider,
+    server: http.Server,
+
+    fn init(self: *@This()) !void {
+        self.database = try postgres.TestDatabase.create(std.testing.allocator, std.posix.getenv("TEST_DATABASE_URL") orelse return error.MissingTestDatabaseUrl);
+        errdefer self.database.deinit();
+        try migrations.apply(&self.database.pool);
+        self.provider = try public_ranking.Provider.init(std.testing.allocator, &self.database.pool);
+        errdefer self.provider.deinit();
+        self.server = http.Server.init(std.testing.allocator);
+        errdefer self.server.deinit();
+        try public_ranking.register(&self.server, &self.provider);
+    }
+
+    fn deinit(self: *@This()) void {
+        self.server.deinit();
+        self.provider.deinit();
+        self.database.deinit();
+    }
+
+    fn sql(self: *@This(), command: []const u8) !void {
+        var result = try self.database.pool.query(command, &.{});
+        result.deinit();
+    }
+
+    fn get(self: *@This(), target: []const u8) !http.response.Response {
+        return self.server.dispatch(.{ .method = .GET, .target = target });
+    }
+
+    fn expire(self: *@This()) void {
+        // Advance the existing monotonic clock without sleeping or adding a test clock.
+        self.provider.timer.started.timestamp.tv_sec -= 300;
+    }
+};
+
+test "public ranking pagination public whitelist lazy snapshot and failure backoff" {
+    var f: RankingFixture = undefined;
+    try f.init();
+    defer f.deinit();
+    for ([_]usize{ 0, 1, 50, 51, 52 }) |count| {
+        try f.sql("TRUNCATE users CASCADE");
+        const seed = try std.fmt.allocPrint(std.testing.allocator,
+            \\INSERT INTO users(discord_id,discord_username,active_seconds) SELECT 'private-'||i,'secret',i FROM generate_series(1,{d}) i;
+            \\INSERT INTO applications(user_id,minecraft_nickname,minecraft_nickname_normalized,client_type,about_me,discovery_source,status)
+            \\SELECT id,'Player_'||id,'player_'||id,'cracked','private bio','secret source','approved' FROM users;
+        , .{count});
+        defer std.testing.allocator.free(seed);
+        try f.sql(seed);
+        f.expire();
+        var result = try f.get("/api/v1/public/ranking?page=18446744073709551615");
+        defer result.deinit();
+        try std.testing.expectEqual(@as(u16, 200), result.status);
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, result.body, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        const pages: i64 = if (count > 50) 2 else 1;
+        try std.testing.expectEqual(@as(i64, @intCast(count)), object.get("total_players").?.integer);
+        try std.testing.expectEqual(pages, object.get("page").?.integer);
+        try std.testing.expectEqual(pages, object.get("total_pages").?.integer);
+        const players = object.get("players").?.array.items;
+        try std.testing.expectEqual(if (count > 50) count - 50 else count, players.len);
+        if (players.len > 0) {
+            try std.testing.expectEqual(@as(usize, 4), players[0].object.count());
+            try std.testing.expectEqual(if (count > 50) @as(i64, 51) else @as(i64, 1), players[0].object.get("rank").?.integer);
+        }
+        try std.testing.expectEqual(@as(usize, 6), object.count());
+        try std.testing.expect(result.header("Set-Cookie") == null);
+        try std.testing.expect(result.header("Vary") == null);
+        try std.testing.expectEqualStrings("application/json; charset=utf-8", result.header("Content-Type").?);
+        try std.testing.expect(std.mem.startsWith(u8, result.header("Cache-Control").?, "public, max-age="));
+        var authenticated = try f.server.dispatch(.{ .method = .GET, .target = "/api/v1/public/ranking?page=18446744073709551615", .cookie = "mine_session=untrusted", .authorization = "Bearer ignored" });
+        defer authenticated.deinit();
+        try std.testing.expectEqualStrings(result.body, authenticated.body);
+        try f.sql("UPDATE users SET active_seconds=99999");
+        var cached = try f.get("/api/v1/public/ranking?page=18446744073709551615");
+        defer cached.deinit();
+        try std.testing.expectEqualStrings(result.body, cached.body);
+    }
+    // Missing relation makes accidental reads observable; invalid queries never refresh.
+    try f.sql("ALTER TABLE applications RENAME TO ranking_hidden_applications");
+    f.expire();
+    for ([_][]const u8{ "/api/v1/public/ranking#x", "/api/v1/public/ranking?page=1#x" }) |target| {
+        var malformed = try f.get(target);
+        defer malformed.deinit();
+        try expectError(&malformed, 400, "invalid_query");
+        const parsed_error = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, malformed.body, .{});
+        defer parsed_error.deinit();
+        try std.testing.expectEqualStrings("Invalid ranking query", parsed_error.value.object.get("error").?.object.get("message").?.string);
+        try std.testing.expectEqualStrings("no-store", malformed.header("Cache-Control").?);
+        try std.testing.expect(malformed.header("X-Request-ID") != null);
+        try std.testing.expect(f.provider.retry_deadline_ns == null);
+        try std.testing.expect(f.provider.dataset != null);
+    }
+    var invalid = try f.get("/api/v1/public/ranking?page=0");
+    defer invalid.deinit();
+    try expectError(&invalid, 400, "invalid_query");
+    try std.testing.expect(f.provider.retry_deadline_ns == null);
+    var unavailable = try f.get("/api/v1/public/ranking");
+    defer unavailable.deinit();
+    try expectError(&unavailable, 503, "ranking_unavailable");
+    try std.testing.expectEqualStrings("no-store", unavailable.header("Cache-Control").?);
+    try std.testing.expectEqualStrings("5", unavailable.header("Retry-After").?);
+    try std.testing.expect(f.provider.dataset == null);
+    try f.sql("ALTER TABLE ranking_hidden_applications RENAME TO applications");
+    var backoff = try f.get("/api/v1/public/ranking");
+    defer backoff.deinit();
+    try std.testing.expectEqual(@as(u16, 503), backoff.status);
+    f.provider.retry_deadline_ns = 0;
+    var recovered = try f.get("/api/v1/public/ranking");
+    defer recovered.deinit();
+    try std.testing.expectEqual(@as(u16, 200), recovered.status);
+}
+
+test "public ranking exact seconds ordering eligibility banned tail and owned names" {
+    var f: RankingFixture = undefined;
+    try f.init();
+    defer f.deinit();
+    try f.sql(
+        \\INSERT INTO users(discord_id,discord_username,active_seconds)
+        \\VALUES ('1','secret',119),('2','secret',61),('3','secret',0),('4','secret',99999),('5','secret',99999),('6','secret',99999),('7','secret',61),('8','secret',99999),('9','secret',99999);
+        \\INSERT INTO applications(user_id,minecraft_nickname,minecraft_nickname_normalized,client_type,about_me,discovery_source,status,decision_reason)
+        \\VALUES (1,'Zed','zed','cracked','private','private','approved',NULL),
+        \\(2,'Alpha','alpha','cracked','private','private','approved',NULL),
+        \\(3,'Zero','zero','cracked','private','private','approved',NULL),
+        \\(4,'Banned','banned','cracked','private','private','banned','private reason'),
+        \\(5,'Pending','pending','cracked','private','private','pending',NULL),
+        \\(6,'Rejected','rejected','cracked','private','private','rejected_final','private reason'),
+        \\(7,'alpha','other','cracked','private','private','approved',NULL),
+        \\(8,'   ','blank','cracked','private','private','approved',NULL);
+    );
+    var result = try f.get("/api/v1/public/ranking");
+    defer result.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, result.body, .{});
+    defer parsed.deinit();
+    const players = parsed.value.object.get("players").?.array.items;
+    try std.testing.expectEqual(@as(usize, 5), players.len);
+    for (players, [_][]const u8{ "Zed", "Alpha", "alpha", "Zero", "Banned" }, [_]i64{ 1, 1, 1, 0, 1666 }, 0..) |player, name, minutes, i| {
+        try std.testing.expectEqualStrings(name, player.object.get("minecraft_nickname").?.string);
+        try std.testing.expectEqual(minutes, player.object.get("active_minutes").?.integer);
+        try std.testing.expectEqual(i == 4, player.object.get("banned").?.bool);
+    }
+    try std.testing.expectEqual(@as(usize, 20), parsed.value.object.get("updated_at").?.string.len);
+    // Dataset and response independently own their nicknames after libpq result release.
+    try f.sql("UPDATE applications SET minecraft_nickname='Changed' WHERE user_id=1");
+    f.expire();
+    var refreshed = try f.get("/api/v1/public/ranking");
+    defer refreshed.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, refreshed.body, "Changed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.body, "Zed") != null);
+}
 
 const cracked = "{\"minecraft_nickname\":\" Example_Name \",\"client_type\":\"cracked\",\"about_me\":\" I build rail systems. \",\"discovery_source\":\" Friend \",\"password\":\"blue-harbor-falcon-2026\"}";
 const licensed = "{\"minecraft_nickname\":\"Licensed_Name\",\"client_type\":\"licensed\",\"about_me\":\"I build.\",\"discovery_source\":\"Friend\"}";

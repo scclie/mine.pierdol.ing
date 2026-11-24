@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const postgres_bin = b.option([]const u8, "game-auth-postgres-bin", "Directory containing already-provisioned PostgreSQL binaries") orelse "";
 
     const pool_module = b.createModule(.{
         .root_source_file = b.path("src/db/pool.zig"),
@@ -153,6 +154,12 @@ pub fn build(b: *std.Build) void {
     public_servers_module.addImport("db_pool", pool_module);
     public_servers_module.addImport("config", config_module);
     public_servers_module.addImport("mojang_build", mojang_build_module);
+    const ranking_repository_module = b.createModule(.{ .root_source_file = b.path("src/db/ranking.zig"), .target = target, .optimize = optimize });
+    ranking_repository_module.addImport("db_pool", pool_module);
+    const public_ranking_module = b.createModule(.{ .root_source_file = b.path("src/routes/public_ranking.zig"), .target = target, .optimize = optimize });
+    public_ranking_module.addImport("http_server", http_server_module);
+    public_ranking_module.addImport("db_pool", pool_module);
+    public_ranking_module.addImport("ranking_repository", ranking_repository_module);
     const discord_module = b.createModule(.{
         .root_source_file = b.path("src/services/discord.zig"),
         .target = target,
@@ -232,6 +239,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("active_minutes", active_minutes_module);
     exe.root_module.addImport("health", health_module);
     exe.root_module.addImport("public_servers", public_servers_module);
+    exe.root_module.addImport("public_ranking", public_ranking_module);
     exe.root_module.addImport("runtime", runtime_module);
     exe.root_module.addImport("mojang", mojang_module);
     exe.root_module.addImport("mojang_transport", mojang_transport_module);
@@ -389,6 +397,23 @@ pub fn build(b: *std.Build) void {
     account_route_tests.linkLibC();
     account_route_tests.linkSystemLibrary("pq");
     const run_account_route_tests = b.addRunArtifact(account_route_tests);
+    account_route_tests.root_module.addImport("public_ranking", public_ranking_module);
+    account_route_tests.root_module.addImport("ranking_repository", ranking_repository_module);
+    const ranking_tests = b.addTest(.{ .name = "public-ranking-tests", .root_source_file = b.path("test/account_routes_test.zig"), .target = target, .optimize = optimize, .filters = &.{"public ranking"} });
+    for ([_][]const u8{ "config", "auth", "domain", "migrations", "postgres", "http_server", "discord", "auth_routes", "applications", "public_ranking", "ranking_repository" }) |name| {
+        ranking_tests.root_module.addImport(name, account_route_tests.root_module.import_table.get(name).?);
+    }
+    ranking_tests.root_module.addImport("mojang", mojang_module);
+    ranking_tests.root_module.addImport("fake_mojang", fake_mojang_module);
+    ranking_tests.linkLibC();
+    ranking_tests.linkSystemLibrary("pq");
+    const ranking_check = b.step("check-public-ranking", "Compile only public ranking fixtures and executable wiring");
+    ranking_check.dependOn(&ranking_tests.step);
+    ranking_check.dependOn(&exe.step);
+    const ranking_postgres = b.addSystemCommand(&.{ "python3", "test/support/game_auth_postgres.py", "--postgres-bin", postgres_bin });
+    ranking_postgres.addArtifactArg(ranking_tests);
+    ranking_postgres.has_side_effects = true;
+    b.step("test-public-ranking-postgres", "Run only public ranking fixtures in disposable local PostgreSQL").dependOn(&ranking_postgres.step);
 
     const admin_route_tests = b.addTest(.{
         .root_source_file = b.path("test/admin_routes_test.zig"),
@@ -435,7 +460,7 @@ pub fn build(b: *std.Build) void {
     integration_check.dependOn(&game_auth_route_tests.step);
     integration_check.dependOn(&exe.step);
 
-    const disposable_postgres = b.addSystemCommand(&.{ "python3", "test/support/game_auth_postgres.py", "--postgres-bin", b.option([]const u8, "game-auth-postgres-bin", "Directory containing already-provisioned PostgreSQL binaries") orelse "" });
+    const disposable_postgres = b.addSystemCommand(&.{ "python3", "test/support/game_auth_postgres.py", "--postgres-bin", postgres_bin });
     disposable_postgres.addArtifactArg(game_auth_route_tests);
     disposable_postgres.has_side_effects = true;
     b.step("test-game-auth-postgres", "Explicitly run real game-auth fixtures in a new disposable loopback PostgreSQL cluster").dependOn(&disposable_postgres.step);
